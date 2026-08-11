@@ -26,7 +26,27 @@ Effective capacity — the `kv` at which recall crosses 95%, **interpolated** be
 
 **4. Interpolate the capacity crossing; never snap it to a grid point.** Grid-snapped, every mode reads a flat `32` at every `r` because all crossings fall inside the 32→48 gap — the entire redundancy effect vanishes. `effective_capacity()` interpolates, and takes the *last* crossing since the curves are not monotone (`linear` dips below threshold at kv=4, recovers at kv=8, then falls for good).
 
-**5. The redundant/non-redundant gap was mostly undertraining, and this reframes Stage 4.** At 8000 steps `delta`'s gap is +0.4 / +0.6 / +1.8 / +8.2 across `r`; at 1500 steps the same runs showed +12.8 / +15.4 / +31.8 / +59.7. Converged models handle redundant and unique queries almost equally, so **there is little "gap" left for a dedup mechanism to exploit.** Stage 4's target is therefore not the gap but the capacity decline in finding 2: a working deduplicator should keep capacity flat in `r` instead of losing 24%. `linear` still shows +9 to +23, so the shared-value prior remains reachable without retrieval and is still a confound for any mechanism evaluated on redundant queries alone.
+**5. The redundant/non-redundant gap was mostly undertraining. It is a confound to avoid, not a target to chase.** At 8000 steps `delta`'s gap is +0.4 / +0.6 / +1.8 / +8.2 across `r`; the same runs at 1500 steps showed +12.8 / +15.4 / +31.8 / +59.7. Converged models handle unique and redundant queries almost equally. `linear` still shows +9 to +23 while retrieving nothing, so the shared-value prior remains reachable without retrieval — which is why **no mechanism may be evaluated on redundant-query accuracy alone.**
+
+### What Stage 4 is actually measured on, and how much headroom it has
+
+Judge deduplication on **capacity vs `r`**, never on the per-query-type gap. Finding 2 is the opportunity, and it is large — the baseline moves in the *wrong direction*.
+
+At redundancy `r`, `N` keys need only about `C + (1−r)·N` distinct values stored (`C = num_value_clusters = 8`). The `r=0` measurement says `S` holds ~44 distinct values, so an encoder that stored each distinct value once should hold:
+
+| `r` | baseline | ideal dedup | headroom |
+|---|---|---|---|
+| 0.0 | 44.0 | 36 | 0.8× |
+| 0.5 | 37.3 | 72 | 1.9× |
+| 0.9 | **33.4** | **360** | **10.8×** |
+
+Corroborated by the symptom: at `r=0.9` `delta` scores 90.4% on redundant queries but **82.3% on non-redundant**. The unique-valued keys do *worse* — the 90% of keys re-storing 8 shared values are crowding out the 10% that need their own slot. That is precisely the waste §2 targets.
+
+Three constraints on the demonstration:
+
+- **`r=0` is the regression test.** The addendum's honest note is that at `r=0` the mechanism pays two writes for one. Baseline is 44.0; dropping it there is a loss whatever happens at high `r`.
+- **The measurable gain caps at 3.7×**, not 10.8×: kv ≤ 124 at `seq_len=256`, so `33.4 → 124` saturates the grid. If Stage 4 hits the top, `seq_len` must rise to show the rest — decide that before building, not after.
+- **The budget caveat applies with full force here**, since a deduplicator plausibly speeds convergence as well as raising capacity. The 2× budget re-check is what separates them.
 
 **Throughput** (8000 steps, fully JIT-amortized): all three modes ~460–490k tok/s, 136–144 s per run. `fla`'s fused bf16 kernels and the portable fp32 chunked path come out even at this size; earlier claims in either direction were measured on runs too short to amortize compilation.
 
