@@ -59,11 +59,19 @@ bash scripts/slurm/survey_cluster.sh > cluster_survey.txt 2>&1 \
 
 # --- 2. build the environment on a GPU node -----------------------------
 
-step "building GPU environment (allocates a node on $PARTITION; ~10-20 min)"
-echo "    installing torch+cuda, fla, then running both test suites"
+# Installing here rather than inside srun: compute nodes often have no outbound
+# network, and holding a GPU through a multi-GB torch download wastes the
+# allocation. Only the GPU-dependent checks are srun'd, below.
+step "installing on the login node (~10-20 min; no GPU held)"
+bash scripts/slurm/setup_env.sh --install 2>&1 | tee setup.log
+INSTALL_RC=${PIPESTATUS[0]}
+[ "$INSTALL_RC" -eq 0 ] || die "install phase failed; see setup.log"
+ok "venv built, CPU test suite passed"
+
+step "verifying on a GPU node ($PARTITION)"
 srun --partition="$PARTITION" --gres=gpu:1 --time="$SETUP_TIME" \
      --cpus-per-task=4 --mem=16G \
-     bash scripts/slurm/setup_env.sh 2>&1 | tee setup.log
+     bash scripts/slurm/setup_env.sh --verify 2>&1 | tee -a setup.log
 SETUP_RC=${PIPESTATUS[0]}
 
 if [ "$SETUP_RC" -ne 0 ]; then
