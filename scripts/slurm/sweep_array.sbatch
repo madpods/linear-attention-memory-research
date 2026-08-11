@@ -152,6 +152,28 @@ mkdir -p logs results/parts
 IDX="${SLURM_ARRAY_TASK_ID:?must run as a job array}"
 OUT="results/parts/stage2_${IDX}.csv"
 
+# Triton's kernel cache goes to NODE-LOCAL storage, not its default ~/.triton.
+# Two reasons, both specific to this sweep:
+#   1. 20 tasks start concurrently and compile the SAME kernels. The default
+#      cache sits on NFS-mounted home, and concurrent cross-node writes to it
+#      are a known source of contention and corrupted entries.
+#   2. Home here is a 25GB quota; a kernel cache is not what it is for.
+# The cost is that each task recompiles from cold, measured at ~45s against a
+# ~7min task -- cheap next to debugging a poisoned shared cache mid-array.
+# Slurm sets TMPDIR to a per-job node-local directory on most configurations;
+# /scratch (347G, node-local here) is the fallback.
+TRITON_BASE="${TMPDIR:-/scratch/$USER}"
+if mkdir -p "$TRITON_BASE/triton-$SLURM_JOB_ID-$IDX" 2>/dev/null; then
+    export TRITON_CACHE_DIR="$TRITON_BASE/triton-$SLURM_JOB_ID-$IDX"
+    echo "triton cache: $TRITON_CACHE_DIR (node-local)"
+    # Node-local, so it dies with the node anyway; remove it explicitly so a
+    # requeued task on the same node does not accumulate copies.
+    trap 'rm -rf "$TRITON_CACHE_DIR"' EXIT
+else
+    echo "WARN: could not create a node-local triton cache under $TRITON_BASE;"
+    echo "      falling back to the default (~/.triton, on NFS home)."
+fi
+
 echo "task $IDX -> $OUT  (host $(hostname), partition ${SLURM_JOB_PARTITION:-?})"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 

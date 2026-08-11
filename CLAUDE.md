@@ -17,6 +17,10 @@ Stages 0 and 1 are complete; Stage 2's machinery is built and the reference curv
 
 Smoke results at `r=0`, `num_kv_pairs=8`, `d_model=128`: gated_delta 99.3% @500 steps, delta 30% @300, linear 1.9% @300 — the expected ordering, with plain linear attention failing as the floor.
 
+**This model is too small for a GPU to help, and that is a planning fact, not a complaint.** Measured 2026-08-11 on an A40 at the fixed Stage 2 config (`gated_delta`, `backend=fla`, `seq_len=256`, `d_model=64`, batch 32): **28,884 tok/s**, against ~26,000 tok/s for the portable chunked backend on this workstation's CPU. ~11% — the work per kernel launch is so small that the run is launch-latency bound rather than compute bound. Two consequences: **the reason to use the cluster is the 20-way parallelism, not per-task speed** (75 tasks in ~4 waves of ~7 min ≈ half an hour of wall clock, versus ~10 h serially on CPU); and do not read a poor GPU speedup in a later stage as a bug in that stage's mechanism.
+
+Beware short timing runs: the same config measured 1,068 tok/s over 20 steps, because Triton's first-call JIT compilation (~45 s) swamps everything. Any throughput number from fewer than a few hundred steps is measuring the compiler.
+
 **Output convention: no next-token shift.** Logits at position `p` are scored directly against the answer for a query at `p`. The generator never writes answers into the sequence, so a shifted objective would be predicting filler. `test_metrics_read_query_positions_without_a_shift` pins this.
 
 **Default `chunk_size=64`** — measured optimum on this CPU (8.4–9.5× across seq_len 128–512; 16 and 128 are both meaningfully worse). Chunk size never changes results, only speed, and `test_chunk_size_does_not_change_the_result` enforces that — so treat it as a performance knob, never a hyperparameter to sweep for accuracy.
