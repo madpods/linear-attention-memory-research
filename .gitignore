@@ -16,3 +16,6 @@ wandb/
 .pytest_cache/
 .ipynb_checkpoints/
 .DS_Store
+
+# ...but keep the Stage 2 reference summary: later stages cite it.
+!results/stage2_summary.csv

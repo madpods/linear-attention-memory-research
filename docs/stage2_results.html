@@ -1,0 +1,430 @@
+<title>Stage 2 baselines — recall vs. capacity</title>
+<style>
+  :root {
+    color-scheme: light;
+    --plane:   #f9f9f7;
+    --surface: #fcfcfb;
+    --ink:     #0b0b0b;
+    --ink-2:   #52514e;
+    --ink-3:   #898781;
+    --grid:    #e1e0d9;
+    --axis:    #c3c2b7;
+    --rule:    rgba(11,11,11,0.10);
+    --wash:    rgba(11,11,11,0.03);
+    --s1:      #2a78d6;
+    --s2:      #eb6834;
+    --s3:      #1baf7a;
+    --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --plane:   #0d0d0d;
+      --surface: #1a1a19;
+      --ink:     #ffffff;
+      --ink-2:   #c3c2b7;
+      --ink-3:   #898781;
+      --grid:    #2c2c2a;
+      --axis:    #383835;
+      --rule:    rgba(255,255,255,0.10);
+      --wash:    rgba(255,255,255,0.04);
+      --s1:      #3987e5;
+      --s2:      #d95926;
+      --s3:      #199e70;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --plane:   #0d0d0d;
+    --surface: #1a1a19;
+    --ink:     #ffffff;
+    --ink-2:   #c3c2b7;
+    --ink-3:   #898781;
+    --grid:    #2c2c2a;
+    --axis:    #383835;
+    --rule:    rgba(255,255,255,0.10);
+    --wash:    rgba(255,255,255,0.04);
+    --s1:      #3987e5;
+    --s2:      #d95926;
+    --s3:      #199e70;
+  }
+
+  body {
+    background: var(--plane);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.65;
+    margin: 0;
+    padding: 0 24px 96px;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; display: flex; flex-direction: column; gap: 48px; }
+  header { padding-top: 64px; display: flex; flex-direction: column; gap: 14px; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+  h1 {
+    font-size: clamp(28px, 4.4vw, 40px);
+    line-height: 1.12;
+    letter-spacing: -0.022em;
+    font-weight: 600;
+    margin: 0;
+    text-wrap: balance;
+  }
+  h2 {
+    font-size: 18px;
+    letter-spacing: -0.01em;
+    font-weight: 600;
+    margin: 0 0 14px;
+    text-wrap: balance;
+  }
+  .lede { color: var(--ink-2); max-width: 62ch; margin: 0; }
+  p { margin: 0 0 14px; max-width: 66ch; }
+  p:last-child { margin-bottom: 0; }
+  section { display: flex; flex-direction: column; }
+  strong { font-weight: 600; }
+  .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+  /* The held-fixed configuration is what makes the comparison valid at all,
+     so it sits with the data rather than in a footnote. */
+  .config {
+    display: flex; flex-wrap: wrap; gap: 0 28px;
+    padding: 14px 18px;
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    background: var(--wash);
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--ink-2);
+  }
+  .config span { white-space: nowrap; }
+  .config b { color: var(--ink); font-weight: 600; }
+
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 1px; background: var(--rule); border: 1px solid var(--rule); border-radius: 3px; overflow: hidden; }
+  .tile { background: var(--surface); padding: 18px 20px; display: flex; flex-direction: column; gap: 6px; }
+  .tile .k { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 12px; color: var(--ink-2); }
+  .tile .v { font-size: 30px; font-weight: 600; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+  .tile .n { font-size: 12px; color: var(--ink-3); line-height: 1.45; }
+  .swatch { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+
+  figure { margin: 0; background: var(--surface); border: 1px solid var(--rule); border-radius: 3px; padding: 20px 20px 12px; }
+  .chartwrap { overflow-x: auto; }
+  svg { display: block; width: 100%; height: auto; min-width: 560px; }
+  figcaption { font-size: 12.5px; color: var(--ink-3); padding-top: 10px; border-top: 1px solid var(--rule); margin-top: 8px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 18px; padding-bottom: 14px; font-size: 13px; }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; color: var(--ink-2); }
+
+  .tablewrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 3px; }
+  table { border-collapse: collapse; width: 100%; background: var(--surface); font-size: 13.5px; }
+  th, td { padding: 9px 14px; text-align: right; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  thead th { font-family: var(--mono); font-size: 11px; letter-spacing: 0.07em; text-transform: uppercase; color: var(--ink-3); font-weight: 500; }
+  tbody td { font-variant-numeric: tabular-nums; }
+  tbody tr:last-child td { border-bottom: none; }
+  td.mode { font-family: var(--mono); font-size: 12.5px; }
+  td.mode i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 8px; font-style: normal; }
+  .below { color: var(--ink-3); }
+
+  .note { border-left: 2px solid var(--axis); padding: 2px 0 2px 18px; color: var(--ink-2); }
+  .note b { color: var(--ink); }
+
+  #tip {
+    position: fixed; pointer-events: none; opacity: 0; transition: opacity .12s;
+    background: var(--surface); border: 1px solid var(--rule);
+    border-radius: 3px; padding: 9px 11px; font-size: 12.5px;
+    box-shadow: 0 4px 16px rgba(0,0,0,.13); z-index: 9;
+    font-variant-numeric: tabular-nums; min-width: 148px;
+  }
+  #tip .h { font-family: var(--mono); font-size: 11px; color: var(--ink-3); margin-bottom: 5px; }
+  #tip .r { display: flex; align-items: center; gap: 7px; justify-content: space-between; }
+  #tip .r span { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); }
+  @media (prefers-reduced-motion: reduce) { #tip { transition: none; } }
+
+  /* SVG paints via classes, not presentation attributes: browsers do not
+     substitute var() inside attributes like fill="" or stroke="". */
+  .gridline { stroke: var(--grid); stroke-width: 1; }
+  .axisline { stroke: var(--axis); stroke-width: 1; }
+  .thresh   { stroke: var(--ink-3); stroke-width: 1; stroke-dasharray: 3 4; opacity: .75; }
+  .ytick, .threshlabel { font-family: var(--mono); font-size: 11px; fill: var(--ink-3); font-variant-numeric: tabular-nums; }
+  .threshlabel { font-size: 10.5px; letter-spacing: .06em; }
+  .xtick { font-family: var(--mono); font-size: 11.5px; fill: var(--ink-2); font-variant-numeric: tabular-nums; }
+  .axislabel { font-size: 11.5px; fill: var(--ink-3); }
+  .lines polyline { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  .dots circle { stroke: var(--surface); stroke-width: 2; }
+  .lbl { font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .k1 { stroke: var(--s1); } .k2 { stroke: var(--s2); } .k3 { stroke: var(--s3); }
+  .f1 { fill: var(--s1); }   .f2 { fill: var(--s2); }   .f3 { fill: var(--s3); }
+  .crosshair { stroke: var(--ink-3); stroke-width: 1; opacity: 0; }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Stage 2 · reference curves · r = 0</div>
+    <h1>Error-corrected writes buy capacity. Decay gates don't move the ceiling.</h1>
+    <p class="lede">
+      Multi-query associative recall against a fixed parameter budget, sweeping how many
+      key–value pairs each sequence must hold. These are the baseline curves every later
+      mechanism is measured against.
+    </p>
+    <div class="config">
+      <span><b>1500</b> steps</span>
+      <span>d_model <b>64</b></span>
+      <span><b>2</b> layers</span>
+      <span><b>4</b> heads</span>
+      <span>head_dim <b>16</b></span>
+      <span>seq_len <b>256</b></span>
+      <span>vocab <b>512</b></span>
+      <span>~<b>134k</b> params</span>
+    </div>
+  </header>
+
+  <section>
+    <h2>Effective capacity — largest pair count still recalled at ≥95%</h2>
+    <div class="tiles">
+      <div class="tile">
+        <div class="k"><i class="swatch" style="background:var(--s1)"></i>linear attention</div>
+        <div class="v">&lt; 4</div>
+        <div class="n">Fails the task outright. Never reaches 95% even at the smallest load tested.</div>
+      </div>
+      <div class="tile">
+        <div class="k"><i class="swatch" style="background:var(--s2)"></i>DeltaNet</div>
+        <div class="v">16</div>
+        <div class="n">Error-corrected writes lift recall from 44% to 99.6% at four pairs.</div>
+      </div>
+      <div class="tile">
+        <div class="k"><i class="swatch" style="background:var(--s3)"></i>Gated DeltaNet</div>
+        <div class="v">16</div>
+        <div class="n">Decay gate adds +9.6 points under contention, but the ceiling holds.</div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <figure>
+      <div class="legend">
+        <span><i class="swatch" style="background:var(--s1)"></i>linear attention</span>
+        <span><i class="swatch" style="background:var(--s2)"></i>DeltaNet</span>
+        <span><i class="swatch" style="background:var(--s3)"></i>Gated DeltaNet</span>
+      </div>
+      <div class="chartwrap">
+        <svg viewBox="0 0 720 384" role="img" aria-label="Recall accuracy against number of key-value pairs for three models. Linear attention falls from 44% to 1.5%. DeltaNet holds near 99.6% to 8 pairs then falls to 2.7% at 64. Gated DeltaNet tracks DeltaNet but reaches 75.1% at 32 pairs versus 65.5%.">
+          <g class="gridline">
+            <line x1="64" y1="40"  x2="656" y2="40"></line>
+            <line x1="64" y1="115" x2="656" y2="115"></line>
+            <line x1="64" y1="190" x2="656" y2="190"></line>
+            <line x1="64" y1="265" x2="656" y2="265"></line>
+          </g>
+          <line class="axisline" x1="64" y1="340" x2="656" y2="340"></line>
+
+          <!-- 95% capacity threshold: the line the capacity number is read off -->
+          <line class="thresh" x1="64" y1="55" x2="656" y2="55"></line>
+          <text class="threshlabel" x="656" y="51" text-anchor="end">95% THRESHOLD</text>
+
+          <g class="ytick" text-anchor="end">
+            <text x="52" y="44">100%</text>
+            <text x="52" y="119">75%</text>
+            <text x="52" y="194">50%</text>
+            <text x="52" y="269">25%</text>
+            <text x="52" y="344">0%</text>
+          </g>
+          <g class="xtick" text-anchor="middle">
+            <text x="64"  y="362">4</text>
+            <text x="212" y="362">8</text>
+            <text x="360" y="362">16</text>
+            <text x="508" y="362">32</text>
+            <text x="656" y="362">64</text>
+          </g>
+          <text class="axislabel" x="360" y="380" text-anchor="middle">
+            key–value pairs per sequence
+          </text>
+
+          <g class="lines">
+            <polyline class="k1" points="64,208 212,270.4 360,311.2 508,328.9 656,335.5"></polyline>
+            <polyline class="k2" points="64,41.2 212,41.2 360,50.5 508,143.5 656,331.9"></polyline>
+            <polyline class="k3" points="64,41.8 212,41.8 360,54.4 508,114.7 656,331.3"></polyline>
+          </g>
+
+          <g class="dots">
+            <g class="f1">
+              <circle cx="64" cy="208" r="4.5"></circle><circle cx="212" cy="270.4" r="4.5"></circle>
+              <circle cx="360" cy="311.2" r="4.5"></circle><circle cx="508" cy="328.9" r="4.5"></circle>
+              <circle cx="656" cy="335.5" r="4.5"></circle>
+            </g>
+            <g class="f2">
+              <circle cx="64" cy="41.2" r="4.5"></circle><circle cx="212" cy="41.2" r="4.5"></circle>
+              <circle cx="360" cy="50.5" r="4.5"></circle><circle cx="508" cy="143.5" r="4.5"></circle>
+              <circle cx="656" cy="331.9" r="4.5"></circle>
+            </g>
+            <g class="f3">
+              <circle cx="64" cy="41.8" r="4.5"></circle><circle cx="212" cy="41.8" r="4.5"></circle>
+              <circle cx="360" cy="54.4" r="4.5"></circle><circle cx="508" cy="114.7" r="4.5"></circle>
+              <circle cx="656" cy="331.3" r="4.5"></circle>
+            </g>
+          </g>
+
+          <!-- Direct labels sit at 32 pairs, the only load where the three
+               curves are far enough apart to label without collision. -->
+          <g class="lbl">
+            <text class="f3" x="496" y="104" text-anchor="end">Gated DeltaNet 75.1%</text>
+            <text class="f2" x="496" y="152" text-anchor="end">DeltaNet 65.5%</text>
+            <text class="f1" x="212" y="262">linear 23.2%</text>
+          </g>
+
+          <line id="cross" class="crosshair" x1="0" y1="24" x2="0" y2="340"></line>
+          <g id="hit" fill="transparent">
+            <rect x="0"   y="24" width="138" height="316" data-i="0"></rect>
+            <rect x="138" y="24" width="148" height="316" data-i="1"></rect>
+            <rect x="286" y="24" width="148" height="316" data-i="2"></rect>
+            <rect x="434" y="24" width="148" height="316" data-i="3"></rect>
+            <rect x="582" y="24" width="138" height="316" data-i="4"></rect>
+          </g>
+        </svg>
+      </div>
+      <figcaption>
+        DeltaNet and Gated DeltaNet are indistinguishable until the state comes under
+        contention at 32 pairs. Both collapse to near the linear-attention floor by 64.
+      </figcaption>
+    </figure>
+  </section>
+
+  <section>
+    <h2>All measurements</h2>
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr>
+            <th>model</th><th>4</th><th>8</th><th>16</th><th>32</th><th>64</th>
+            <th>capacity</th><th>tok/s</th><th>params</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="mode"><i style="background:var(--s1)"></i>linear</td>
+            <td>44.0%</td><td class="below">23.2%</td><td class="below">9.6%</td>
+            <td class="below">3.7%</td><td class="below">1.5%</td>
+            <td>&lt; 4</td><td>39,790</td><td>133,344</td>
+          </tr>
+          <tr>
+            <td class="mode"><i style="background:var(--s2)"></i>delta</td>
+            <td>99.6%</td><td>99.6%</td><td>96.5%</td>
+            <td class="below">65.5%</td><td class="below">2.7%</td>
+            <td>16</td><td>26,226</td><td>133,864</td>
+          </tr>
+          <tr>
+            <td class="mode"><i style="background:var(--s3)"></i>gated_delta</td>
+            <td>99.4%</td><td>99.4%</td><td>95.2%</td>
+            <td class="below">75.1%</td><td class="below">2.9%</td>
+            <td>16</td><td>25,231</td><td>134,384</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="font-size:12.5px;color:var(--ink-3);margin-top:10px">
+      Greyed cells fall below the 95% capacity threshold. Throughput measured on CPU
+      with the portable chunked backend; the delta rule costs about a third of linear
+      attention's tokens/sec for its error correction.
+    </p>
+  </section>
+
+  <section>
+    <h2>Reading the curves</h2>
+    <p>
+      <strong>The shape is the published one.</strong> Flat, then a knee, then collapse —
+      matching the DeltaNet paper's MQAR result. That was the precondition for trusting
+      anything downstream, and it holds.
+    </p>
+    <p>
+      <strong>The knee lands where the theory says it should.</strong> With four heads over
+      a 64-wide model, each head's state is 16×16, so <span class="num">rank(S) ≤ 16</span>.
+      Both delta variants hold ≥95% through exactly 16 pairs and break immediately after.
+      A capacity that matches head_dim to the integer is the rank ceiling asserting itself,
+      not a coincidence of tuning.
+    </p>
+    <p>
+      <strong>The decay gate behaves as an evictor, not an expander.</strong> Gated DeltaNet
+      beats DeltaNet only at 32 pairs, where the state is genuinely contended — worth
+      <span class="num">+9.6</span> points. It changes nothing at 4, 8, or 64, and does not
+      move effective capacity. That is the predicted signature: decay frees slots from stale
+      patterns; it cannot raise <span class="num">min(d_k, d_v)</span>.
+    </p>
+    <div class="note">
+      <p><b>These are single-seed runs with no error bars.</b> The gaps at 4, 8, and 16
+      pairs — where Gated DeltaNet trails DeltaNet by 0.2 to 1.3 points — are almost
+      certainly seed noise and should not be read as a real ordering. Only the 9.6-point
+      gap at 32 pairs is large enough to be suggestive, and even that is one seed.</p>
+      <p style="margin-bottom:0">Before these become the reference every later stage is
+      compared against, they need replication across seeds. Otherwise a Stage 4 mechanism
+      that appears to beat the baseline by a few points may just be beating noise.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>What has to happen next</h2>
+    <p>
+      Beating 75% at 32 pairs is incremental. Moving effective capacity from 16 to 32 is the
+      real target, and the plan gives exactly two levers for it — raise the ceiling, or
+      lower the demand on it.
+    </p>
+    <p>
+      <strong>Raise it:</strong> kernel feature maps project keys into <span class="num">d_φ &gt; d_k</span>,
+      changing the ceiling to <span class="num">min(d_φ, d_v)</span> directly, at a compute
+      cost that scales with <span class="num">d_φ</span>.
+      <strong>Lower the demand:</strong> cross-key deduplication refuses to spend a slot on a
+      value the state already holds — which is why the redundancy axis <span class="num">r</span>
+      exists, and why these <span class="num">r = 0</span> curves are only the first row of the
+      grid. The full sweep crosses all five redundancy levels.
+    </p>
+  </section>
+</div>
+
+<div id="tip" role="status" aria-live="polite"></div>
+
+<script>
+  const DATA = {
+    kv: [4, 8, 16, 32, 64],
+    x:  [64, 212, 360, 508, 656],
+    series: [
+      { name: "linear",      v: [44.0, 23.2,  9.6,  3.7, 1.5], c: "--s1" },
+      { name: "delta",       v: [99.6, 99.6, 96.5, 65.5, 2.7], c: "--s2" },
+      { name: "gated_delta", v: [99.4, 99.4, 95.2, 75.1, 2.9], c: "--s3" }
+    ]
+  };
+  const svg = document.querySelector("svg");
+  const tip = document.getElementById("tip");
+  const cross = document.getElementById("cross");
+
+  function show(i, evt) {
+    const rows = DATA.series.map(s =>
+      `<div class="r"><span><i class="swatch" style="background:var(${s.c})"></i>${s.name}</span>
+       <b>${s.v[i].toFixed(1)}%</b></div>`).join("");
+    tip.innerHTML = `<div class="h">${DATA.kv[i]} KEY–VALUE PAIRS</div>${rows}`;
+    tip.style.opacity = "1";
+    const pad = 14;
+    let left = evt.clientX + pad;
+    if (left + tip.offsetWidth > window.innerWidth - 8) left = evt.clientX - tip.offsetWidth - pad;
+    let top = evt.clientY - tip.offsetHeight / 2;
+    top = Math.max(8, Math.min(top, window.innerHeight - tip.offsetHeight - 8));
+    tip.style.left = left + "px";
+    tip.style.top = top + "px";
+    cross.setAttribute("x1", DATA.x[i]);
+    cross.setAttribute("x2", DATA.x[i]);
+    // Inline style, not the attribute: the .crosshair class sets opacity, and a
+    // class rule beats a presentation attribute in the cascade.
+    cross.style.opacity = "0.45";
+  }
+  function hide() {
+    tip.style.opacity = "0";
+    cross.style.opacity = "0";
+  }
+  document.querySelectorAll("#hit rect").forEach(r => {
+    r.addEventListener("mousemove", e => show(+r.dataset.i, e));
+    r.addEventListener("mouseleave", hide);
+  });
+  svg.addEventListener("mouseleave", hide);
+</script>
