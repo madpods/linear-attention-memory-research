@@ -33,7 +33,12 @@ set -uo pipefail
 PARTITION="${PARTITION:-dgxh}"
 VENV="${VENV:-.venv-gpu}"
 SETUP_TIME="${SETUP_TIME:-01:00:00}"
-CONSTRAINT="${CONSTRAINT:-el9}"
+# Empty by default ON PURPOSE. A --constraint passed to sbatch REPLACES the
+# script's own "#SBATCH --constraint=el9&a40" rather than adding to it, so
+# defaulting this to "el9" made the printed submit command silently drop the a40
+# pin -- losing both the sm_70+ guarantee and the homogeneous hardware that makes
+# tokens_per_sec a comparable column. Set it only to deliberately override.
+CONSTRAINT="${CONSTRAINT:-}"
 BUILD_IN_ALLOC=0
 SUBMIT=0
 
@@ -96,10 +101,17 @@ bash scripts/slurm/survey_cluster.sh > cluster_survey.txt 2>&1 \
 # forward compatible, so building on the wrong generation is not recoverable
 # later -- it has to be rebuilt. Check before spending 10-20 minutes on it.
 LOGIN_OS="$( [ -r /etc/os-release ] && ( . /etc/os-release && printf '%s%s' "${ID:-unknown}" "${VERSION_ID%%.*}" ) || echo unknown )"
+# The generation the ARRAY will target: an explicit --constraint if given,
+# otherwise whatever the sbatch file itself pins. Read from the file so the
+# preflight keeps working without this script having to restate the default.
+SBATCH_FILE_NAME=scripts/slurm/sweep_array.sbatch
+SB_CONSTRAINT="$(sed -n 's/^#SBATCH --constraint=\([^ ]*\).*/\1/p' \
+    "$SBATCH_FILE_NAME" | head -1)"
+TARGET_CONSTRAINT="${CONSTRAINT:-$SB_CONSTRAINT}"
 # First digit run only; see the same note in check_os_compat.sh.
-WANT_GEN="$(printf '%s' "$CONSTRAINT" | sed -n 's/^[^0-9]*\([0-9][0-9]*\).*/\1/p')"
+WANT_GEN="$(printf '%s' "$TARGET_CONSTRAINT" | sed -n 's/^[^0-9]*\([0-9][0-9]*\).*/\1/p')"
 LOGIN_GEN="$(printf '%s' "$LOGIN_OS" | sed -n 's/^[^0-9]*\([0-9][0-9]*\).*/\1/p')"
-echo "    login node: $LOGIN_OS   target constraint: ${CONSTRAINT:-none}"
+echo "    login node: $LOGIN_OS   array targets: ${TARGET_CONSTRAINT:-none}$([ -z "$CONSTRAINT" ] && [ -n "$SB_CONSTRAINT" ] && echo "  (from $SBATCH_FILE_NAME)")"
 
 # Only the NEWER-built-than-target direction is fatal; glibc is backward
 # compatible, so building on EL8 and running on EL9 is fine and is in fact the
@@ -231,8 +243,13 @@ else
     Watch:   squeue -u \$USER
     Merge:   python scripts/merge_results.py results/parts results/stage2.csv
 
-    $GRID runs on partition '$SB_PART'.
+    $GRID runs on partition '$SB_PART', constraint '${TARGET_CONSTRAINT:-none}'.
     Change the partition or throttle by editing $SBATCH_FILE.
+
+    Do NOT add --constraint on the command line unless you mean to REPLACE the
+    script's own '$SB_CONSTRAINT' -- sbatch overrides rather than combines, so
+    passing just the OS generation would drop the GPU-class pin that keeps
+    tokens_per_sec comparable and tasks off the sm_61 nodes.
 
     The venv was built on '$BUILT_ON'. glibc is backward but not forward
     compatible, so an el8 build runs on every node and needs no --constraint,

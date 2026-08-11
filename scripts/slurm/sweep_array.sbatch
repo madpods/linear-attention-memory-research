@@ -11,7 +11,7 @@
 #SBATCH --partition=preempt
 #SBATCH --constraint=el9&a40
 #SBATCH --requeue
-#SBATCH --time=02:00:00
+#SBATCH --time=04:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
@@ -58,6 +58,19 @@
 #
 # Accounting: this user's associations are coehpc and eecs, and preempt/share
 # accept any account, so no --account line is needed.
+#
+# --------------------------------------------------------------------------
+# --time=04:00:00
+# --------------------------------------------------------------------------
+# Each task is 1500 steps x batch 32 x seq_len 256 = 12.29M tokens. The CPU
+# baselines ran at ~26k tok/s (~8 min/run), so a GPU should be far under an
+# hour -- but the first observed GPU throughput was 1,068 tok/s on a 20-step
+# smoke run, which is 3.2 hours at that rate. That number is dominated by
+# Triton's first-call JIT compilation rather than steady state, and 20 steps is
+# far too short to amortize it. 4 hours is headroom against being wrong about
+# that: on preempt the limit is 7 days, the queue is uncapped, and --requeue
+# plus CSV-skip makes a longer reservation nearly free. Hitting a wall clock
+# mid-sweep costs a resubmit; over-reserving costs nothing measurable.
 #
 # --------------------------------------------------------------------------
 # Partition choice
