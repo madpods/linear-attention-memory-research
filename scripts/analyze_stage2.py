@@ -152,9 +152,38 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("path", nargs="?", default="results/stage2.csv", type=Path)
     parser.add_argument("--csv", type=Path, help="also write a tidy summary csv")
+    parser.add_argument(
+        "--tag", help="keep only rows with this tag (the preset that produced them)"
+    )
+    parser.add_argument(
+        "--steps", type=int, help="keep only rows with this step count"
+    )
     args = parser.parse_args()
 
     rows = load(args.path)
+    if args.tag:
+        rows = [r for r in rows if r.get("tag") == args.tag]
+        if not rows:
+            raise SystemExit(f"no rows with tag={args.tag!r} in {args.path}")
+    if args.steps:
+        rows = [r for r in rows if int(float(r["steps"])) == args.steps]
+        if not rows:
+            raise SystemExit(f"no rows with steps={args.steps} in {args.path}")
+
+    # Cells group by (mode, r, kv) and average everything else, which is right
+    # for seeds and WRONG for step counts -- averaging a 1500-step run with a
+    # 12000-step one produces a number describing neither. The cliff preset
+    # varies steps deliberately, so refuse to average silently.
+    step_values = sorted({int(float(r["steps"])) for r in rows})
+    if len(step_values) > 1:
+        raise SystemExit(
+            f"{args.path} mixes {len(step_values)} step counts: {step_values}.\n"
+            "Cells average over everything except (mode, r, kv), so this would\n"
+            "average different training budgets together. Split them first:\n"
+            f"    python {Path(__file__).name} {args.path} --steps {step_values[0]}\n"
+            "or filter by the preset that produced them, e.g. --tag full / --tag cliff.\n"
+            f"Tags present: {sorted({r.get('tag', '') for r in rows})}"
+        )
     n_r = len({r["redundancy_r"] for r in rows})
     print(f"{len(rows)} runs from {args.path}")
     print(f"steps={rows[0]['steps']}  d_model={rows[0]['d_model']}  "

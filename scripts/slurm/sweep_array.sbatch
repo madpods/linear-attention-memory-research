@@ -158,13 +158,20 @@ fi
 # shellcheck disable=SC1090
 source "$VENV/bin/activate"
 
-mkdir -p logs results/parts
+mkdir -p logs "${PARTS:-results/parts}"
 
 IDX="${SLURM_ARRAY_TASK_ID:?must run as a job array}"
-# Seed in the filename, so a second seed's array cannot collide with the first's
-# part files -- and so the CSV-skip that makes --requeue safe still matches only
-# the same (config, seed).
-OUT="results/parts/stage2_s${SEED}_${IDX}.csv"
+# One directory per experiment. Task indices restart at 0 for every preset, so a
+# different preset writing into the same directory lands on the same filenames
+# and its rows get appended to the previous preset's files. Nothing is lost --
+# rows are keyed on (mode, r, kv, steps, seed) -- but analyze_stage2.py averages
+# over everything except (mode, r, kv), so mixing presets that differ in steps
+# would average training budgets together. Keep them apart:
+#
+#     PARTS=results/parts_cliff sbatch --array=0-35%14 \
+#         --export=ALL,PRESET=cliff,SEED=0,PARTS=results/parts_cliff ...
+PARTS="${PARTS:-results/parts}"
+OUT="${PARTS}/stage2_s${SEED}_${IDX}.csv"
 
 # Triton's kernel cache goes to NODE-LOCAL storage, not its default ~/.triton.
 # Two reasons, both specific to this sweep:
