@@ -141,6 +141,30 @@ def test_parts_are_read_in_task_order_not_lexicographic(tmp_path, monkeypatch):
     assert [r["num_kv_pairs"] for r in merged] == ["0", "2", "10"]
 
 
+def test_seeded_part_names_do_not_collide_or_misorder(tmp_path, monkeypatch):
+    """Seed replication names parts stage2_s<seed>_<idx>.
+
+    Concatenating the digits would turn "stage2_s1_7" into 17 and collide with
+    seed 0's task 17, so each digit run is a separate sort component. The rows
+    themselves are keyed on seed, so both seeds must survive as distinct rows.
+    """
+    parts = tmp_path / "parts"
+    parts.mkdir()
+    write_part(parts / "stage2_s0_17.csv", [base_row(seed="0", num_kv_pairs="16")])
+    write_part(parts / "stage2_s1_7.csv", [base_row(seed="1", num_kv_pairs="8")])
+    write_part(parts / "stage2_s0_2.csv", [base_row(seed="0", num_kv_pairs="4")])
+
+    out = tmp_path / "merged.csv"
+    run(monkeypatch, parts, out)
+
+    merged = list(csv.DictReader(out.open(newline="", encoding="utf-8")))
+    assert len(merged) == 3, "seeds must not collapse into one another"
+    # seed 0 task 2, then seed 0 task 17, then seed 1 task 7.
+    assert [(r["seed"], r["num_kv_pairs"]) for r in merged] == [
+        ("0", "4"), ("0", "16"), ("1", "8"),
+    ]
+
+
 def test_missing_parts_dir_is_a_clean_error(tmp_path, monkeypatch):
     empty = tmp_path / "parts"
     empty.mkdir()

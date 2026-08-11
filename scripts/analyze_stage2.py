@@ -59,10 +59,39 @@ def effective_capacity(points: dict[int, float]) -> str:
     return f">= {best}" if best == kvs[-1] else str(best)
 
 
+def _group_of(row: dict, group_key: str) -> float | int:
+    value = float(row[group_key])
+    return int(value) if group_key == "num_kv_pairs" else value
+
+
+def collect(rows: list[dict], mode: str, group_key: str, value_key: str) -> dict:
+    """``{group: [value, ...]}`` for one mode. A LIST, not a scalar.
+
+    Assigning a scalar here silently kept only the last matching row, which made
+    the "pooled over kv" table report the kv=64 column alone -- and that column
+    is fully collapsed, so it read as recall *improving* with redundancy when it
+    was showing chance improving as the answer pool shrank. Multiple rows per
+    cell are now the normal case anyway, since seeds are replicated.
+    """
+    points: dict = defaultdict(list)
+    for row in rows:
+        if row["mode"] != mode:
+            continue
+        if not row.get(value_key):
+            continue
+        points[_group_of(row, group_key)].append(float(row[value_key]))
+    return points
+
+
 def table(rows: list[dict], group_key: str, title: str, value_key: str) -> None:
-    """Recall table: one row per mode, one column per distinct group_key."""
-    groups = sorted({int(float(r[group_key])) if group_key == "num_kv_pairs"
-                     else float(r[group_key]) for r in rows})
+    """Recall table: one row per mode, one column per distinct group_key.
+
+    Cells are means over whatever else varies (seeds always; kv as well when
+    grouping by r). When any cell pools more than one run, a companion spread
+    table follows -- at the capacity cliff the spread is the whole story, and a
+    mean alone there invites reading noise as an effect.
+    """
+    groups = sorted({_group_of(r, group_key) for r in rows})
     if len(groups) < 2 and group_key == "redundancy_r":
         return  # nothing to compare yet
 
@@ -71,16 +100,52 @@ def table(rows: list[dict], group_key: str, title: str, value_key: str) -> None:
     print(f"{'mode':<13} {header}   capacity@{int(CAPACITY_THRESHOLD * 100)}%")
     print("-" * (14 + 9 * len(groups) + 16))
 
+    spreads: dict[str, dict] = {}
     for mode in by_mode(rows):
-        points: dict = {}
-        for r in rows:
-            if r["mode"] != mode:
-                continue
-            g = int(float(r[group_key])) if group_key == "num_kv_pairs" else float(r[group_key])
-            points[g] = float(r[value_key])
-        cells = "  ".join(fmt_pct(points.get(g)) for g in groups)
-        cap = effective_capacity(points) if group_key == "num_kv_pairs" else ""
+        points = collect(rows, mode, group_key, value_key)
+        means = {g: sum(v) / len(v) for g, v in points.items()}
+        cells = "  ".join(fmt_pct(means.get(g)) for g in groups)
+        # Capacity is only defined against a kv curve. For the r-grouped table
+        # it is reported separately, per r, by capacity_vs_r().
+        cap = effective_capacity(means) if group_key == "num_kv_pairs" else ""
         print(f"{mode:<13} {cells}   {cap:>12}")
+        spread = {g: max(v) - min(v) for g, v in points.items() if len(v) > 1}
+        if spread:
+            spreads[mode] = (spread, {g: len(v) for g, v in points.items()})
+
+    if spreads:
+        n_max = max(max(counts.values()) for _, counts in spreads.values())
+        print(f"  spread (max-min across {n_max} runs per cell)")
+        for mode, (spread, _counts) in spreads.items():
+            cells = "  ".join(
+                "     -" if g not in spread else f"{100 * spread[g]:5.1f} "
+                for g in groups
+            )
+            print(f"  {mode:<11} {cells}")
+
+
+def capacity_vs_r(rows: list[dict]) -> None:
+    """Effective capacity at each redundancy level.
+
+    This is the headline cross-cutting number the plan asks every stage to
+    produce, and it is the one figure that compresses a curve into something
+    comparable across mechanisms. Reported per r because capacity is defined
+    against a kv curve -- there is no single capacity for a mode across all r,
+    which is why the r-grouped recall table leaves that column blank.
+    """
+    r_values = sorted({float(x["redundancy_r"]) for x in rows})
+    print(f"\nEffective capacity@{int(CAPACITY_THRESHOLD * 100)}% vs redundancy r")
+    header = "  ".join(f"{r:>7}" for r in r_values)
+    print(f"{'mode':<13} {header}")
+    print("-" * (14 + 9 * len(r_values)))
+    for mode in by_mode(rows):
+        cells = []
+        for r_val in r_values:
+            subset = [x for x in rows if float(x["redundancy_r"]) == r_val]
+            points = collect(subset, mode, "num_kv_pairs", "final_accuracy")
+            means = {g: sum(v) / len(v) for g, v in points.items()}
+            cells.append(f"{effective_capacity(means):>7}")
+        print(f"{mode:<13} {'  '.join(cells)}")
 
 
 def main() -> None:
@@ -104,8 +169,12 @@ def main() -> None:
               "final_accuracy")
 
     if n_r > 1:
-        table(rows, "redundancy_r", "Recall vs redundancy r (pooled over kv)",
+        table(rows, "redundancy_r",
+              "Recall vs redundancy r (mean over kv -- mixes saturated and "
+              "collapsed regimes;\nread the capacity table below instead for a "
+              "single comparable number)",
               "final_accuracy")
+        capacity_vs_r(rows)
         print("\nRedundant vs non-redundant queries (r>0 only)")
         print(f"{'mode':<13} {'r':>6} {'redundant':>11} {'non-redund':>11} {'gap':>8}")
         print("-" * 52)

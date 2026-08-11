@@ -105,6 +105,17 @@ set -euo pipefail
 
 VENV="${VENV:-.venv-gpu}"
 PRESET="${PRESET:-full}"
+# Seed replication is the point of this knob. A GPU run is 27-69s, so a whole
+# 75-config grid is ~30 min of wall clock -- cheap enough that single-seed
+# numbers are no longer defensible near the capacity cliff, where the first
+# CPU-vs-GPU comparison moved delta at kv=32 by 10 points and reversed the
+# delta/gated_delta ordering. Submit additional seeds with:
+#
+#     SEED=1 sbatch --export=ALL,SEED=1 scripts/slurm/sweep_array.sbatch
+#
+# Each seed writes its own part files, so merge_results.py picks all of them up
+# and analyze_stage2.py averages per cell and reports the spread.
+SEED="${SEED:-0}"
 
 # Slurm is normally auto-loaded on submit nodes. If it was missing, the CoE
 # docs say to reset Unix config files via TEACH; this is the short-term fix.
@@ -150,7 +161,10 @@ source "$VENV/bin/activate"
 mkdir -p logs results/parts
 
 IDX="${SLURM_ARRAY_TASK_ID:?must run as a job array}"
-OUT="results/parts/stage2_${IDX}.csv"
+# Seed in the filename, so a second seed's array cannot collide with the first's
+# part files -- and so the CSV-skip that makes --requeue safe still matches only
+# the same (config, seed).
+OUT="results/parts/stage2_s${SEED}_${IDX}.csv"
 
 # Triton's kernel cache goes to NODE-LOCAL storage, not its default ~/.triton.
 # Two reasons, both specific to this sweep:
@@ -182,5 +196,6 @@ nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 srun python scripts/stage2_sweep.py \
     --preset "$PRESET" \
     --backend fla \
+    --seed "$SEED" \
     --only-index "$IDX" \
     --out "$OUT"

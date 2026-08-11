@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import re
 from pathlib import Path
 
 KEY = ("mode", "redundancy_r", "num_kv_pairs", "steps", "seed")
@@ -32,10 +33,12 @@ def main() -> None:
     args = parser.parse_args()
 
     # Natural sort: a plain sort gives stage2_10 before stage2_2, which makes the
-    # merged file's row order arbitrary to read.
-    def task_index(path: Path) -> tuple[int, str]:
-        digits = "".join(ch for ch in path.stem if ch.isdigit())
-        return (int(digits) if digits else -1, path.stem)
+    # merged file's row order arbitrary to read. Every digit run is kept as its
+    # own component, because names carry a seed as well as a task index
+    # ("stage2_s1_7"); concatenating the digits would make that 17 and collide
+    # with seed 0's task 17.
+    def task_index(path: Path) -> tuple[tuple[int, ...], str]:
+        return (tuple(int(g) for g in re.findall(r"\d+", path.stem)), path.stem)
 
     parts = sorted(args.parts_dir.glob("*.csv"), key=task_index)
     if not parts:
