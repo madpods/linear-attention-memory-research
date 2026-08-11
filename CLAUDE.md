@@ -100,10 +100,16 @@ There is **no `pytorch`/`conda` module in play** — the venv is built from the 
 
 One EL8 caveat to watch on first install: PyPI's torch wheels are `manylinux_2_28`, and Rocky 8's glibc 2.28 is exactly that floor. If pip ever fails to resolve a torch wheel there, the fallback is to build on EL9 and constrain the array to EL9 rather than to fight it.
 
-**The mixed OS is a live hazard, not trivia.** glibc is not forward compatible: a venv whose interpreter came from an EL9 python module fails on an EL8 node with `GLIBC_2.34 not found` from the dynamic loader, and array tasks land wherever the scheduler puts them. Two ways out, and picking one is required:
+**The mixed OS is a live hazard, not trivia**, and the rule is *directional*. glibc is backward compatible but not forward compatible:
 
-- **Build on EL8** — those binaries run on both generations. Simplest, needs no constraint, and it is the *default outcome* if the login node is EL8: the module list captured on 2026-08-11 came from `modulefiles-8`, so at least one login node is EL8. Confirm with the `os-release` line `survey_cluster.sh` prints.
-- **Pin with `--constraint`** — `sbatch --constraint=<feature> …`, or `day1.sh --constraint <feature>`, which applies it to the verify allocation too. Feature names are site-specific; `survey_cluster.sh`'s "node features" section lists them per node, deduped, and GPU-nodes-only, so read that rather than guessing at `el9`.
+- **built on EL8, running on EL9 → fine.** Binaries linked against the older glibc resolve against the newer one.
+- **built on EL9, running on EL8 → fatal.** `GLIBC_2.34 not found` from the dynamic loader, since EL8 ships 2.28.
+
+So **building on the EL8 login node is strictly the better choice**: the venv is then usable on every node in the cluster and the array needs no `--constraint` at all. The captured module list came from `modulefiles-8`, so at least one login node is already EL8 — confirm with the `os-release` line `survey_cluster.sh` prints. An EL9-built venv works too but must be pinned with `--constraint=el9`, giving up ~60% of the nodes.
+
+The Slurm feature names are confirmed to be **`el8` / `el9`**, e.g. `srun -p preempt --constraint=el8 --pty bash`. `day1.sh --constraint el8` applies it to the verify allocation and the array together. `survey_cluster.sh` still dumps per-node features, which is worth reading to see which *GPU* partitions carry which generation.
+
+`scripts/slurm/check_os_compat.sh` owns this rule so it exists once rather than in both callers, and encodes the direction — an EL8-built venv is explicitly *not* blocked on EL9 nodes. Getting that backwards is expensive both ways: too strict silently wastes 40% of the cluster, too loose lets tasks die in the loader. Seven cases in `test_module_resolution.sh` pin it. The residual risk on the EL8→EL9 path is not glibc but the per-generation module tree, which surfaces as a legible module-load warning rather than a loader error.
 
 `setup_env.sh` records the build generation to `$VENV/build_os`; both `--verify` and every array task compare against it and abort early with the fix rather than dying in the loader mid-sweep.
 

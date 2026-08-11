@@ -34,11 +34,14 @@ if have sinfo; then
 fi
 
 section "node features -- for --constraint (OS generation lives here)"
-# The cluster mixes Rocky 8 and Rocky 9, and glibc is not forward compatible: a
-# venv built on EL9 will not run on an EL8 node. Pinning the array to one
-# generation needs the site's feature name, which is what %f reports. Look for
-# something like el8/el9, rocky8/rocky9, or centos8. Then:
-#     sbatch --constraint=<feature> scripts/slurm/sweep_array.sbatch
+# The cluster mixes Rocky 8 and Rocky 9, and glibc is backward but not forward
+# compatible: a venv built on EL9 will not run on an EL8 node, though an EL8
+# build runs on both. The feature names here are el8 / el9, e.g.
+#     srun -p preempt --constraint=el8 --pty bash
+#     sbatch --constraint=el9 scripts/slurm/sweep_array.sbatch
+# What is worth reading below is which GPU partitions carry which generation --
+# constraining to el9 on a partition whose GPU nodes are all el8 just pends
+# forever.
 if have sinfo; then
     echo "--- per node (name, partition, features) ---"
     sinfo -N -o "%20N %20P %40f" | sort -u

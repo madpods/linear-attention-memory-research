@@ -225,6 +225,43 @@ run_cuda_case "real list, cu12 -> 12.9"  "$REAL_CUDA" 12 '' 'cuda/12.9'
 run_cuda_case "real list, cu13 -> 13.3"  "$REAL_CUDA" 13 '' 'cuda/13.3'
 run_cuda_case "real list, cu11 -> 11.8"  "$REAL_CUDA" 11 '' 'cuda/11.8'
 
+# --- check_os_compat.sh -----------------------------------------------------
+#
+# The rule is DIRECTIONAL, and getting it backwards is expensive in both
+# directions: too strict wastes ~40% of the cluster's nodes on a venv that
+# would have run fine, too loose lets tasks die in the dynamic loader.
+
+echo
+echo "check_os_compat (glibc is backward but not forward compatible)"
+
+COMPAT="$(dirname "$SETUP")/check_os_compat.sh"
+
+run_os_case() {
+    local name="$1" build="$2" run="$3" want_rc="$4"
+    local rc
+    bash "$COMPAT" "$build" "$run" >/dev/null 2>&1; rc=$?
+    printf '%-28s' "$name"
+    if [ "$rc" -ne "$want_rc" ]; then
+        echo "FAIL (build=$build run=$run gave exit $rc, wanted $want_rc)"
+        FAILURES=$((FAILURES + 1))
+    else
+        echo "ok   build=$build run=$run exit=$rc"
+    fi
+}
+
+run_os_case "el8 venv on el8"   rocky8  rocky8  0
+# The case that must NOT be blocked: an EL8 build is usable everywhere, which
+# is why building on the EL8 login node needs no --constraint at all.
+run_os_case "el8 venv on el9"   rocky8  rocky9  0
+# The case that must be blocked: newer glibc cannot run on older.
+run_os_case "el9 venv on el8"   rocky9  rocky8  1
+run_os_case "el9 venv on el9"   rocky9  rocky9  0
+# Unknown either side: warn and continue rather than blocking a whole sweep on
+# an unparseable /etc/os-release.
+run_os_case "unknown build"     unknown rocky8  0
+run_os_case "unknown run"       rocky8  unknown 0
+run_os_case "empty build"       ''      rocky8  0
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
     echo "all cases passed"

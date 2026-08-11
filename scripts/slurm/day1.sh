@@ -7,13 +7,14 @@
 #     bash scripts/slurm/day1.sh                 # set up and stop before submitting
 #     bash scripts/slurm/day1.sh --submit        # ... and submit the 75-job array
 #     bash scripts/slurm/day1.sh --partition dgx2
-#     bash scripts/slurm/day1.sh --constraint el9   # pin to one OS generation
+#     bash scripts/slurm/day1.sh --constraint el8   # pin to one OS generation
 #
-# The cluster mixes Rocky 8 and Rocky 9. glibc is not forward compatible, so a
-# venv built on EL9 cannot run on an EL8 node; --constraint pins the verify
-# allocation and the array to one generation. Feature names are site-specific --
-# cluster_survey.txt lists them under "node features". Building on EL8 is the
-# alternative: those binaries run on both.
+# The cluster mixes Rocky 8 and Rocky 9, and glibc is backward but not forward
+# compatible. Building on an EL8 login node is therefore the better default: the
+# venv then runs on every node and needs no --constraint. An EL9-built venv must
+# be pinned with --constraint=el9, which costs ~60% of the nodes. Feature names
+# are el8 / el9; cluster_survey.txt lists what each node advertises under "node
+# features". scripts/slurm/check_os_compat.sh enforces the direction.
 #
 # It surveys the cluster, builds the GPU environment, runs both test suites,
 # checks the array size, and prints the submit command. It deliberately does
@@ -170,10 +171,9 @@ else
     $GRID runs on partition '$SB_PART'.
     Change the partition or throttle by editing $SBATCH_FILE.
 
-    The venv was built on '$BUILT_ON'. This cluster mixes Rocky 8 and 9 and
-    glibc is not forward compatible, so tasks landing on the other generation
-    abort early with instructions rather than failing in the loader. Pin them
-    with --constraint=<feature>; cluster_survey.txt lists the feature names
-    under "node features".
+    The venv was built on '$BUILT_ON'. glibc is backward but not forward
+    compatible, so an el8 build runs on every node and needs no --constraint,
+    while an el9 build must use --constraint=el9. Tasks that would fail abort
+    early naming the fix instead of dying in the dynamic loader.
 EOF
 fi

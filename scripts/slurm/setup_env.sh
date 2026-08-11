@@ -222,15 +222,8 @@ if [ "$DO_VERIFY" -eq 1 ]; then
 
     echo "==> os generation"
     if [ -r "$VENV/build_os" ]; then
-        BUILD_OS="$(cat "$VENV/build_os")"; RUN_OS="$(os_generation)"
-        echo "    built on $BUILD_OS, running on $RUN_OS"
-        if [ "$BUILD_OS" != "$RUN_OS" ]; then
-            echo "FATAL: glibc is not forward compatible across EL generations."
-            echo "This venv was built on $BUILD_OS and cannot run on $RUN_OS."
-            echo "Rebuild on $RUN_OS, or pin your allocations with"
-            echo "  --constraint=<feature>   (see survey_cluster.sh for names)."
-            exit 1
-        fi
+        bash "$(dirname "$0")/check_os_compat.sh" "$(cat "$VENV/build_os")" \
+            | sed 's/^/    /' || exit 1
     else
         echo "    WARN: no $VENV/build_os; rebuild with setup_env.sh --install"
     fi
