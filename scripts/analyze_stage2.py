@@ -58,20 +58,37 @@ def _mean_of(rows: list[dict], key: str) -> float | None:
 
 
 def effective_capacity(points: dict[int, float]) -> str:
-    """Largest kv still at >= threshold, with a note if the curve never drops.
+    """Effective capacity: the kv at which recall crosses the threshold.
 
-    Reported as a bound rather than a point estimate when the sweep never
-    reaches the threshold in either direction -- claiming a capacity outside
-    the measured range would overstate what the data supports.
+    Interpolated between grid points rather than snapped to one, because
+    snapping destroys the measurement. At 8000 steps every mode's 95% crossing
+    falls inside the 32->48 gap, so the snapped value reads a flat 32 at every
+    redundancy level and the redundancy effect -- a ~24% capacity loss from r=0
+    to r=0.9 -- is completely invisible. Interpolating recovers it (44.0 -> 33.4)
+    and costs nothing, since it is the same definition read at finer resolution.
+
+    Uses the LAST crossing, because these curves are not always monotone: linear
+    attention at r=0 dips below the threshold at kv=4, rises above it at kv=8,
+    then falls for good. The last downward crossing is the capacity; an early
+    dip at a trivially small kv is a training artifact, not a ceiling.
+
+    Still reported as a bound when the curve never crosses inside the measured
+    range, since claiming a capacity outside it would overstate the data.
     """
     if not points:
         return "n/a"
     kvs = sorted(points)
-    passing = [kv for kv in kvs if points[kv] >= CAPACITY_THRESHOLD]
-    if not passing:
-        return f"< {kvs[0]}"
-    best = max(passing)
-    return f">= {best}" if best == kvs[-1] else str(best)
+    crossing = None
+    for lo, hi in zip(kvs, kvs[1:]):
+        if points[lo] >= CAPACITY_THRESHOLD > points[hi]:
+            span = points[lo] - points[hi]
+            frac = (points[lo] - CAPACITY_THRESHOLD) / span if span else 0.0
+            crossing = lo + frac * (hi - lo)
+    if crossing is not None:
+        return f"{crossing:.1f}"
+    if points[kvs[-1]] >= CAPACITY_THRESHOLD:
+        return f">= {kvs[-1]}"
+    return f"< {kvs[0]}"
 
 
 def _group_of(row: dict, group_key: str) -> float | int:

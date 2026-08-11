@@ -4,81 +4,45 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-Stages 0–2 are complete. The full 75-config grid ran on the cluster (A40, `backend=fla`) at **4 seeds = 300 runs**, merged to `results/stage2_gpu.csv`, summarised in `results/stage2_gpu_summary.csv`. **Four findings govern everything downstream — read these before designing Stage 3 or 4.**
+Stages 0–2 are complete. **The Stage 2 reference baseline is `results/stage2_v2.csv` / `results/stage2_v2_summary.csv`**: 105 configs × 4 seeds = 420 runs, 8000 steps, A40, `backend=fla`, `kv ∈ {4,8,16,32,48,64,96}` × `r ∈ {0,0.25,0.5,0.75,0.9}`.
 
-**1. Mid-cliff accuracy is unusable as a metric: the cells are bimodal, not noisy.** Over 4 seeds, kv=32 spreads **47.4 points** (`delta`, `r=0`) around a 62.2% mean, and up to **60.6** (`gated_delta`, `r=0.25`). A 47-point spread on a 62% mean is not a distribution around a central value — some seeds learn the task and some do not. The mean describes no actual run. The instability spreads to kv=16 as `r` rises (23.5 at `r=0.5`, 29.5 at `r=0.75`). Away from the cliff everything is tight: kv=4/8 spread ≤5.2, kv=64 ≤2.9.
+Getting there took three grids, and the two discarded ones are instructive enough to keep as warnings — see "How Stage 2 was got wrong twice" below.
 
-**Consequence: `capacity@95%` is the only accuracy metric Stages 3–6 may compare on**, because it is a threshold crossing away from the bimodal region and it came out *identical* across all 4 seeds. A mechanism claim must move it as a discrete step (8→16, 16→32). Any claim resting on mid-cliff accuracy needs an effect larger than ~50 points, which nothing plausible will deliver.
+### The Stage 2 baseline
 
-**2. Redundancy destroys effective capacity — the headline Stage 2 result.** `capacity@95%` goes `16, 16, 8, 8, <4` across `r = 0, 0.25, 0.5, 0.75, 0.9`. Halved by `r=0.5`, gone by `r=0.9`. Stable across seeds. This is the curve every later stage is trying to lift, on the axis this project added.
+Effective capacity — the `kv` at which recall crosses 95%, **interpolated** between grid points:
 
-**3. `delta` and `gated_delta` are indistinguishable — a negative result, and negative results are deliverables.** They have the **same `capacity@95%` at every single `r`**. `gated_delta` is nominally ahead at kv=32 for all five `r` values (+8.3, +15.9, +9.2, +9.3, +4.2), but every one of those gaps is **0.11–0.35× the spread of the cells being compared**. A 5-of-5 sign test gives p≈0.031 — suggestive, not established, and the cells are not independent. **Do not claim decay gates buy capacity on this evidence.** An earlier single-seed read of these same runs concluded the opposite ("robust at `r>0`", citing 72.1 vs 9.8); that conclusion was an artifact of n=1 and is retracted. The plan's fixed baseline is still Gated DeltaNet, which remains correct — it just does not measurably beat plain DeltaNet here.
-
-**4. The redundant/non-redundant gap is partly an artifact, and must not be read as retrieval.** Redundant queries beat non-redundant by +11 to +62 points, widening with `r`. But `linear` — which cannot retrieve at all — scores **34.8% on redundant queries at `r=0.9`** against 0.0% on non-redundant. So much of redundant-query accuracy is reachable by learning the shared-value prior over `num_value_clusters=8` representatives, no retrieval involved. The honest measure is the margin over `linear` at the same `r` (at `r=0.9`: 69.7 `gated_delta` vs 34.8 `linear` — real retrieval is happening). Never the raw redundant accuracy, and never the redundant-minus-non-redundant gap alone. **Stage 4's dedup mechanism is evaluated on exactly these queries, so this confound is a trap directly in its path — it would flatter the mechanism.**
-
-## The 1500-step reference grid is INVALID — it measures optimization speed, not capacity
-
-Settled by the `cliff` preset (steps × kv, 4 seeds, `r=0`). This supersedes findings 1–3 above wherever they rest on absolute numbers; only finding 4 (the redundant-query confound) is budget-independent.
-
-| steps | `delta` kv=16 | kv=32 | kv=64 | `capacity@95%` | kv=32 spread |
+| mode | r=0 | r=0.25 | r=0.5 | r=0.75 | r=0.9 |
 |---|---|---|---|---|---|
-| 1,500 | 96.1% | 62.2% | 2.7% | 16 | **47.4** |
-| 3,000 | 99.2% | 92.2% | 57.7% | 16 | 4.4 |
-| 6,000 | 99.7% | 97.0% | 87.1% | **32** | 2.2 |
-| 12,000 | 99.9% | 98.8% | 91.0% | **32** | 0.6 |
+| `linear` | 8.1 | <4 | <4 | <4 | <4 |
+| `delta` | **44.0** | 41.9 | 37.3 | 38.2 | **33.4** |
+| `gated_delta` | 42.3 | 42.0 | 35.9 | 36.1 | 33.3 |
 
-Three conclusions, all firm:
+**1. The premise holds: error-corrected writes buy ~5× capacity** (44.0 vs 8.1 at `r=0`). This is the DeltaNet-vs-linear-attention result the plan required as its sanity check, and it only appears at adequate budget *and* adequate grid resolution — earlier grids showed the two as equal.
 
-1. **The bimodality was undertraining, entirely.** The kv=32 spread collapses 47.4 → 4.4 → 2.2 → 0.6 as the budget grows. Nothing about the state matrix was bimodal; the optimizer had not finished.
-2. **`capacity@95%` at 1500 steps understates the ceiling by at least 2×, and had not stopped rising at 12,000** — kv=64 sits at 91%, just under threshold. So the published-looking `16, 16, 8, 8, <4` collapse-with-redundancy curve is *not* a capacity result. It may be entirely a statement about how many steps each redundancy level needs.
-3. **Even the floor was undertrained.** `linear` at kv=16 goes 10.0% → 93.2%. The clean "error-corrected writes buy capacity, linear attention fails" ordering that Stage 2 was built to reproduce is, at this budget, substantially a *convergence-speed* difference rather than a capacity difference. That is worth stating plainly because the whole project is premised on a capacity story.
+**2. Redundancy costs capacity: 44.0 → 33.4, about −24%.** Roughly monotone in `r`. **This is the curve Stages 3–6 must lift**, and it is measured on the axis this project adds.
 
-What survives and is now *stronger*: **`delta` and `gated_delta` are indistinguishable.** At 12,000 steps they are 98.8 vs 98.6 (kv=32) and 91.0 vs 90.8 (kv=64), with spreads ≤3.4. The negative result holds at every budget tested.
+**3. `delta` ≈ `gated_delta`. Fourth confirmation, now at 420 runs.** 44.0 vs 42.3 at `r=0`, within ~1–2 at every `r`, differences well inside per-cell spreads. Decay gates buy nothing measurable at this scale. A negative result, which the plan counts as a deliverable. Gated DeltaNet remains the fixed comparison baseline as principle 3 requires — it simply does not beat plain DeltaNet here.
 
-**Do not run Stage 3 or 4 against the 1500-step curves.** The budget has to be re-fixed at a converged value first, and the reference grid regenerated — otherwise a mechanism that merely speeds up convergence will read as one that raises capacity, which is the exact confusion the whole design is meant to avoid.
+**4. Interpolate the capacity crossing; never snap it to a grid point.** Grid-snapped, every mode reads a flat `32` at every `r` because all crossings fall inside the 32→48 gap — the entire redundancy effect vanishes. `effective_capacity()` interpolates, and takes the *last* crossing since the curves are not monotone (`linear` dips below threshold at kv=4, recovers at kv=8, then falls for good).
 
-### Converged, and the premise claim does not survive it
+**5. The redundant/non-redundant gap was mostly undertraining, and this reframes Stage 4.** At 8000 steps `delta`'s gap is +0.4 / +0.6 / +1.8 / +8.2 across `r`; at 1500 steps the same runs showed +12.8 / +15.4 / +31.8 / +59.7. Converged models handle redundant and unique queries almost equally, so **there is little "gap" left for a dedup mechanism to exploit.** Stage 4's target is therefore not the gap but the capacity decline in finding 2: a working deduplicator should keep capacity flat in `r` instead of losing 24%. `linear` still shows +9 to +23, so the shared-value prior remains reachable without retrieval and is still a confound for any mechanism evaluated on redundant queries alone.
 
-The `converge` preset (kv ∈ {32, 64, 96} × steps ∈ {24000, 48000}, 4 seeds, `r=0`) settles the budget question and produces a harder result.
+**Throughput** (8000 steps, fully JIT-amortized): all three modes ~460–490k tok/s, 136–144 s per run. `fla`'s fused bf16 kernels and the portable fp32 chunked path come out even at this size; earlier claims in either direction were measured on runs too short to amortize compilation.
 
-| | kv=32 | kv=64 | kv=96 | `capacity@95%` |
-|---|---|---|---|---|
-| `linear` @48k | 98.4% | 61.2% | 1.3% | **32** |
-| `delta` @48k | 99.7% | 93.4% | 82.7% | **32** |
-| `gated_delta` @48k | 99.4% | 93.8% | 83.0% | **32** |
+### One caveat on the fixed budget
 
-**Converged.** `capacity@95%` is 32 at 6000, 12000, 24000 and 48000 steps, and kv=96 even ticks *down* from 24k to 48k. The budget question is closed: convergence by ~6000 steps.
+8000 steps is **not** fully converged at the top of the kv range: `delta` sits at 93.9% on kv=48, and the crossing keeps moving out with more steps. Chasing true convergence is impractical — capacity appears to grow with log(steps) until the rank limit binds — so the budget is fixed at 8000 per principle 3 and every number above is "capacity at 8000 steps". The risk this creates is specific and must be guarded: **a mechanism that merely speeds up convergence will look like one that raises capacity.** So any Stage 4+ claim has to be re-verified at 2× budget for its best configuration before it is believed. One extra run set, and it directly separates the two.
 
-**Linear attention reaches the same `capacity@95%` as both error-corrected rules.** At 1500 steps `linear` looked like a floor (10% at kv=16); converged, it matches on the headline metric. So the reproduction of "error-corrected writes buy capacity, plain linear attention fails" was, at the original budget, **substantially a statement about convergence rate**. Error-corrected writes *do* buy capacity — but further out than the original grid could see (kv=64: 93.4% vs 61.2%; kv=96: 82.7% vs 1.3%), and the headline metric could not detect it.
+### How Stage 2 was got wrong twice
 
-**The cause was grid resolution, not the architecture.** The converged 95% crossings are ~35 (`linear`), ~56 (`delta`), ~57 (`gated_delta`) — all three inside the old grid's 32→64 gap, which is exactly why `capacity@95%` collapsed to 32 for every mode. No `d_model` change is needed; one extra kv point fixes it (`linear` ~80% at kv=48, `delta` ~97%).
+Both mistakes produced clean, plausible, publishable-looking curves. Neither was detectable from within its own grid.
 
-**The reference config is therefore re-fixed once, deliberately** (plan principle 3): `steps` 1500 → **8000**, and `kv_pairs` gains **48** → `(4, 8, 16, 32, 48, 64, 96)`. That is 105 configs, ~140 s per run, ~70 min of wall clock for 4 seeds. The hard kv ceiling is 124 (`2·kv + num_queries ≤ seq_len=256`), so `delta`'s ~56 crossing leaves ~2.2× headroom for a mechanism to demonstrate an improvement — tight but workable, and preferable to re-tuning `d_model` on top of everything else.
+**Attempt 1 — 1500 steps, kv ≤ 64.** Reported `capacity@95%` collapsing `16, 16, 8, 8, <4` with redundancy, and mid-cliff cells bimodal with 47-point spreads across seeds. All of it was undertraining: the spreads collapse to 0.6 by 12000 steps, and capacity doubles. `linear` at kv=16 goes 10.0% → 93.2%. **The "linear attention fails" floor was a convergence-rate artifact at that budget.**
 
-**All Stage 2 numbers recorded before this re-fix are superseded**, including `results/stage2_gpu_summary.csv` and `docs/stage2_results.html`. `delta ≈ gated_delta` is the one conclusion that has held at every budget and every kv tested and needs no re-verification.
+**Attempt 2 — the `converge` sweep, kv ∈ {32, 64, 96}.** Concluded capacity was converged at 32 from 6000 steps on. Wrong, because the grid had no kv=48 point: every mode's crossing sat in the 32→64 gap, so the metric read a constant 32 while the true crossing kept moving. **The coarse grid and the short budget each hid the other.**
 
-**Throughput was also misread earlier.** Fully JIT-amortized at 48k steps: `delta` 705k tok/s, `gated_delta` 653k, `linear` 487k. So `fla`'s fused bf16 kernels are *faster* than the portable fp32 chunked path — the reverse of the earlier reading, which was taken from runs short enough that compilation dominated. A 48000-step run takes 9.4 min, not the 36 min estimated from the compile-contaminated figure.
-
-- `src/lamr/data/mqar.py` — redundancy-parameterized MQAR generator (Stage 1).
-- `src/lamr/layers/recurrent.py` — sequential reference update rules; correctness ground truth.
-- `src/lamr/layers/chunked.py` — chunk-parallel delta rule in portable PyTorch (§15), ~8.5× the sequential reference on CPU.
-- `src/lamr/layers/linear_attn.py` — the layer; modes `linear` / `delta` / `gated_delta` differ *only* in update rule.
-- `src/lamr/models/lm.py` — small stacked LM; architecture fixed here per Stage 2.
-- `src/lamr/metrics.py` — shared recall metrics, sliced by redundancy. Every stage calls this.
-- `src/lamr/train.py` — the single training entry point (`python -m lamr.train`).
-- `scripts/stage2_sweep.py` — baseline sweeps; appends CSV and skips completed runs, so it resumes.
-
-Smoke results at `r=0`, `num_kv_pairs=8`, `d_model=128`: gated_delta 99.3% @500 steps, delta 30% @300, linear 1.9% @300 — the expected ordering, with plain linear attention failing as the floor.
-
-**GPU throughput, measured over the full grid** (A40, 1500 steps, `seq_len=256`, `d_model=64`, batch 32): `linear` 454k tok/s (27 s/run), `delta` 181k (68 s), `gated_delta` 181k (69 s) — against ~26k tok/s for `delta`/`gated_delta` and ~40k for `linear` on this workstation's CPU. So `fla` gives ~7× over the CPU chunked backend, and the linear/delta spread is the **update rule** (delta's within-chunk sequential structure), not the backend.
-
-Beware short timing runs. The same `gated_delta` config measured **1,068 tok/s over 20 steps** and **28,884 over 200**, against 181k over 1500 — Triton's first-call JIT (~45 s) swamps everything short. Any throughput number from fewer than several hundred steps is measuring the compiler, and an early reading of it here led to a wrong conclusion that `fla` was slower than the portable chunked path (it was comparing `linear`-on-chunked against `gated_delta`-on-fla, i.e. two different update rules, with the fla figure still compile-dominated). There is no evidence the chunked backend beats `fla` on GPU; that comparison has not been run.
-
-**Output convention: no next-token shift.** Logits at position `p` are scored directly against the answer for a query at `p`. The generator never writes answers into the sequence, so a shifted objective would be predicting filler. `test_metrics_read_query_positions_without_a_shift` pins this.
-
-**Default `chunk_size=64`** — measured optimum on this CPU (8.4–9.5× across seq_len 128–512; 16 and 128 are both meaningfully worse). Chunk size never changes results, only speed, and `test_chunk_size_does_not_change_the_result` enforces that — so treat it as a performance knob, never a hyperparameter to sweep for accuracy.
-
-Read `linear_attention_memory_research_plan.md` before doing anything non-trivial. It is the single source of truth for both the research design (Part 1, sections §1–§17) and the build order (Part 2, Stages 0–8). Part 2 stages cite the Part 1 sections that motivate them (e.g. Stage 4 implements §2); follow those cross-references rather than re-deriving the design.
+The lesson worth carrying into Stages 3–6: a metric that reads *constant* across a sweep is as suspicious as one that moves wildly. Both times, the flat reading was the grid failing to resolve the effect, not the effect being absent. Check the underlying curve before believing a flat capacity column.
 
 ## Commands
 
