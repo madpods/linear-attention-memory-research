@@ -85,6 +85,31 @@ else
     echo "WARN: $VENV/modules.env missing -- run scripts/slurm/setup_env.sh first"
 fi
 
+# The cluster mixes Rocky 8 and Rocky 9 (~60/40) and glibc is not forward
+# compatible, so a venv built against an EL9 python module cannot run on an EL8
+# node. Left unchecked that surfaces as "GLIBC_2.34 not found" from the dynamic
+# loader partway through a 75-task array. Fail fast and name the fix instead.
+if [ -r "$VENV/build_os" ] && [ -r /etc/os-release ]; then
+    BUILD_OS="$(cat "$VENV/build_os")"
+    # shellcheck disable=SC1091
+    RUN_OS="$(. /etc/os-release && printf '%s%s' "${ID:-unknown}" "${VERSION_ID%%.*}")"
+    if [ "$BUILD_OS" != "$RUN_OS" ]; then
+        echo "FATAL: venv was built on $BUILD_OS but this node is $RUN_OS." >&2
+        echo "glibc is not forward compatible, so this task would fail in the" >&2
+        echo "dynamic loader. Pin the array to one OS generation and resubmit:" >&2
+        echo >&2
+        echo "    sbatch --constraint=<feature> scripts/slurm/sweep_array.sbatch" >&2
+        echo >&2
+        echo "Find the feature name for this cluster with:" >&2
+        echo "    sinfo -o '%20N %20P %40f'      # per-node features" >&2
+        echo "    scripts/slurm/survey_cluster.sh  # includes a deduped list" >&2
+        echo >&2
+        echo "Building on an EL8 node instead makes the venv run on both." >&2
+        exit 1
+    fi
+    echo "os: $RUN_OS (matches build)"
+fi
+
 # shellcheck disable=SC1090
 source "$VENV/bin/activate"
 

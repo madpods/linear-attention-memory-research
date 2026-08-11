@@ -33,6 +33,37 @@ if have sinfo; then
     sinfo -N -o "%20N %20P %30G %10m %8t" | grep -i gpu || echo "(no nodes advertise a gpu GRES)"
 fi
 
+section "node features -- for --constraint (OS generation lives here)"
+# The cluster mixes Rocky 8 and Rocky 9, and glibc is not forward compatible: a
+# venv built on EL9 will not run on an EL8 node. Pinning the array to one
+# generation needs the site's feature name, which is what %f reports. Look for
+# something like el8/el9, rocky8/rocky9, or centos8. Then:
+#     sbatch --constraint=<feature> scripts/slurm/sweep_array.sbatch
+if have sinfo; then
+    echo "--- per node (name, partition, features) ---"
+    sinfo -N -o "%20N %20P %40f" | sort -u
+    echo
+    echo "--- deduped feature list ---"
+    sinfo -h -o "%f" | tr ',' '\n' | sed 's/^ *//; s/ *$//' | grep -v '^$' | sort -u
+    echo
+    echo "--- features on GPU nodes only ---"
+    sinfo -N -h -o "%N %G %f" | grep -i gpu | awk '{print $NF}' \
+        | tr ',' '\n' | sort -u | grep -v '^$' || echo "(none reported)"
+else
+    echo "sinfo not found"
+fi
+echo
+echo "This login node reports:"
+if [ -r /etc/os-release ]; then
+    ( . /etc/os-release && echo "    $PRETTY_NAME  (ID=$ID VERSION_ID=$VERSION_ID)" )
+else
+    echo "    /etc/os-release unreadable"
+fi
+echo "    glibc: $(ldd --version 2>/dev/null | head -1)"
+echo
+echo "Build the venv on the OLDER generation (EL8) and it runs on both;"
+echo "build on EL9 and the array must be constrained to EL9 nodes."
+
 section "accounts this user may charge (--account)"
 if have sacctmgr; then
     sacctmgr -n show associations user="$(whoami)" \

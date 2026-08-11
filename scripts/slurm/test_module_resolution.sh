@@ -45,8 +45,10 @@ module() {
     esac
 }
 STUB
-        # Splice the real function and the real record-writing block.
-        sed -n '/^REPLAYED_MODULES=0/,/^}/p' "$SETUP"
+        # Splice the real helpers (everything from REPLAYED_MODULES=0 up to the
+        # install section) plus the real record-writing block, so this test
+        # cannot drift from the code it validates.
+        sed -n '/^REPLAYED_MODULES=0/,/^# -*  *install/p' "$SETUP" | sed '$d'
         echo 'load_modules'
         sed -n '/^    # Only write the record if this run actually chose/,/^    fi$/p' "$SETUP"
         echo 'echo "REACHED_END"'
@@ -102,6 +104,77 @@ run_case "preserves prior record" \
     'python/3.9
 cuda/12.1' \
     'python/3.9 cuda/12.1'
+
+# --- load_cuda_module -------------------------------------------------------
+#
+# The cluster carries CUDA 11.x through 13.x, so Lmod's (D) default is not
+# necessarily the major the installed torch was built against. A toolkit newer
+# than torch's bundled runtime is where Triton's first kernel compile goes
+# wrong, so selection follows torch, not the default.
+
+echo
+echo "load_cuda_module (cluster carries cuda 11.x-13.x)"
+
+# $1 name, $2 stubbed `module -t avail cuda` output, $3 torch's CUDA major,
+# $4 MODULE_CUDA override, $5 expected module recorded (empty = none loaded)
+run_cuda_case() {
+    local name="$1" avail="$2" want="$3" override="$4" expect="$5"
+    local dir="$WORK/cuda"
+    rm -rf "$dir"; mkdir -p "$dir/.venv-gpu"
+
+    {
+        echo 'set -euo pipefail'
+        echo 'VENV=.venv-gpu'
+        cat <<'STUB'
+module() {
+    case "${1:-}" in
+        -t) printf '%s\n' "${AVAIL_OUT:-}" ;;
+        load) echo "  [stub loaded ${2:-}]" ;;
+        *) : ;;
+    esac
+}
+STUB
+        sed -n '/^REPLAYED_MODULES=0/,/^# -*  *install/p' "$SETUP" | sed '$d'
+        echo 'load_cuda_module "$WANT"'
+        echo 'printf "%s\n" "${LOADED[@]:-}" | grep -E "^cuda/" || true'
+        echo 'echo "REACHED_END"'
+    } > "$dir/harness.sh"
+
+    local out rc got
+    out="$(cd "$dir" && AVAIL_OUT="$avail" WANT="$want" MODULE_CUDA="$override" \
+        bash harness.sh 2>&1)"; rc=$?
+    got="$(grep -E '^cuda/' <<<"$out" | tail -1 || true)"
+
+    printf '%-28s' "$name"
+    if [ "$rc" -ne 0 ] || ! grep -q REACHED_END <<<"$out"; then
+        echo "FAIL (exited $rc before finishing -- set -e abort?)"
+        sed 's/^/      /' <<<"$out"; FAILURES=$((FAILURES + 1))
+    elif [ "$got" != "$expect" ]; then
+        echo "FAIL (chose [$got], expected [$expect])"
+        sed 's/^/      /' <<<"$out"; FAILURES=$((FAILURES + 1))
+    else
+        echo "ok   chose=[${got:-none}]"
+    fi
+}
+
+ALL_CUDA='cuda/11.8
+cuda/12.1
+cuda/12.4
+cuda/13.0(D)'
+
+# torch built against 12.x must NOT take the 13.0 default.
+run_cuda_case "torch cu12 -> newest 12.x" "$ALL_CUDA" 12 '' 'cuda/12.4'
+# ... and a cu13 torch should take 13.0 even though it is also the default.
+run_cuda_case "torch cu13 -> 13.0"        "$ALL_CUDA" 13 '' 'cuda/13.0'
+# An older torch still resolves to its own major rather than the default.
+run_cuda_case "torch cu11 -> 11.8"        "$ALL_CUDA" 11 '' 'cuda/11.8'
+# No module for torch's major: warn and continue on the bundled runtime.
+run_cuda_case "no matching major"  'cuda/11.8
+cuda/12.4' 13 '' ''
+# Explicit override always wins.
+run_cuda_case "MODULE_CUDA override"      "$ALL_CUDA" 12 'cuda/11.8' 'cuda/11.8'
+# torch reports no CUDA at all (a CPU wheel slipped in): must not abort.
+run_cuda_case "torch has no cuda"         "$ALL_CUDA" '' '' ''
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

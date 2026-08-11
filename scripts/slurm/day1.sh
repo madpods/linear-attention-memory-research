@@ -7,6 +7,13 @@
 #     bash scripts/slurm/day1.sh                 # set up and stop before submitting
 #     bash scripts/slurm/day1.sh --submit        # ... and submit the 75-job array
 #     bash scripts/slurm/day1.sh --partition dgx2
+#     bash scripts/slurm/day1.sh --constraint el9   # pin to one OS generation
+#
+# The cluster mixes Rocky 8 and Rocky 9. glibc is not forward compatible, so a
+# venv built on EL9 cannot run on an EL8 node; --constraint pins the verify
+# allocation and the array to one generation. Feature names are site-specific --
+# cluster_survey.txt lists them under "node features". Building on EL8 is the
+# alternative: those binaries run on both.
 #
 # It surveys the cluster, builds the GPU environment, runs both test suites,
 # checks the array size, and prints the submit command. It deliberately does
@@ -17,6 +24,7 @@ set -uo pipefail
 PARTITION="${PARTITION:-dgxh}"
 VENV="${VENV:-.venv-gpu}"
 SETUP_TIME="${SETUP_TIME:-01:00:00}"
+CONSTRAINT="${CONSTRAINT:-}"
 SUBMIT=0
 
 while [ $# -gt 0 ]; do
@@ -24,11 +32,22 @@ while [ $# -gt 0 ]; do
         --submit) SUBMIT=1 ;;
         --partition) PARTITION="$2"; shift ;;
         --partition=*) PARTITION="${1#*=}" ;;
-        -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
+        --constraint) CONSTRAINT="$2"; shift ;;
+        --constraint=*) CONSTRAINT="${1#*=}" ;;
+        -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
     shift
 done
+
+# The cluster mixes Rocky 8 and Rocky 9 and glibc is not forward compatible, so
+# the venv must be built and run on one generation. --constraint pins both the
+# verify allocation and the array to the same feature. Feature names are
+# site-specific; cluster_survey.txt lists them (see the "node features"
+# section). Passed as a real srun/sbatch argument only when set, so the default
+# behaviour is unchanged.
+CONSTRAINT_ARGS=()
+[ -n "$CONSTRAINT" ] && CONSTRAINT_ARGS=(--constraint="$CONSTRAINT")
 
 step()  { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
 ok()    { printf '    \033[32mok\033[0m %s\n' "$1"; }
@@ -70,7 +89,7 @@ ok "venv built, CPU test suite passed"
 
 step "verifying on a GPU node ($PARTITION)"
 srun --partition="$PARTITION" --gres=gpu:1 --time="$SETUP_TIME" \
-     --cpus-per-task=4 --mem=16G \
+     --cpus-per-task=4 --mem=16G "${CONSTRAINT_ARGS[@]+"${CONSTRAINT_ARGS[@]}"}" \
      bash scripts/slurm/setup_env.sh --verify 2>&1 | tee -a setup.log
 SETUP_RC=${PIPESTATUS[0]}
 
@@ -135,19 +154,26 @@ if [ "$SUBMIT" -eq 1 ]; then
     # Slurm opens the array's --output/--error files itself at task launch, so
     # logs/ must exist now; the mkdir inside the job script runs too late.
     mkdir -p logs results/parts
-    sbatch scripts/slurm/sweep_array.sbatch
+    sbatch "${CONSTRAINT_ARGS[@]+"${CONSTRAINT_ARGS[@]}"}" scripts/slurm/sweep_array.sbatch
     echo
     echo "Watch:   squeue -u \$USER"
     echo "Merge:   python scripts/merge_results.py results/parts results/stage2.csv"
 else
     step "ready -- not submitting (pass --submit to go ahead)"
     mkdir -p logs results/parts
+    BUILT_ON="$( [ -r "$VENV/build_os" ] && cat "$VENV/build_os" || echo unknown )"
     cat <<EOF
-    Submit:  mkdir -p logs && sbatch scripts/slurm/sweep_array.sbatch
+    Submit:  sbatch ${CONSTRAINT:+--constraint=$CONSTRAINT }scripts/slurm/sweep_array.sbatch
     Watch:   squeue -u \$USER
     Merge:   python scripts/merge_results.py results/parts results/stage2.csv
 
     $GRID runs on partition '$SB_PART'.
     Change the partition or throttle by editing $SBATCH_FILE.
+
+    The venv was built on '$BUILT_ON'. This cluster mixes Rocky 8 and 9 and
+    glibc is not forward compatible, so tasks landing on the other generation
+    abort early with instructions rather than failing in the loader. Pin them
+    with --constraint=<feature>; cluster_survey.txt lists the feature names
+    under "node features".
 EOF
 fi

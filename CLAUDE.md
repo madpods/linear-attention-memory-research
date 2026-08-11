@@ -76,7 +76,22 @@ python scripts/merge_results.py results/parts results/stage2.csv
 
 `scripts/slurm/survey_cluster.sh` (read-only, login node) re-derives the table below plus the available module versions.
 
-**Modules must match between build and run.** The cluster uses Lmod, and the CoE docs are explicit that modules used to build software into a python environment have to be loaded again to run it. Triton compiles kernels against the CUDA toolkit on first call, so a batch job missing the cuda module fails deep inside `fla` rather than at import — a confusing failure to debug mid-sweep. `setup_env.sh` therefore resolves modules (preferring Lmod's `(D)` default, overridable via `MODULE_PYTHON` / `MODULE_CUDA`), records them to `$VENV/modules.env`, and `sweep_array.sbatch` replays that file. If you rebuild the venv by hand, re-record that file too.
+**Modules must match between build and run.** The cluster uses Lmod, and the CoE docs are explicit that modules used to build software into a python environment have to be loaded again to run it. Triton compiles kernels against the CUDA toolkit on first call, so a batch job missing the cuda module fails deep inside `fla` rather than at import — a confusing failure to debug mid-sweep. `setup_env.sh` therefore resolves modules, records them to `$VENV/modules.env`, and `sweep_array.sbatch` replays that file. If you rebuild the venv by hand, re-record that file too. `setup_env.sh --verify` compiles and runs a trivial Triton kernel for exactly this reason: `import triton` succeeding proves nothing about the failure mode, which is *first-call compilation*.
+
+### Cluster environment (confirmed 2026-08-11)
+
+Rocky Linux **8 and 9, mixed** (~60/40). Slurm. CUDA modules **11.x–13.x**, GCC 5.x–15.2, LLVM 14–20, NVHPC 24.x/25.x, Intel OneAPI 2022/2024/2025.
+
+**The mixed OS is a live hazard, not trivia.** glibc is not forward compatible: a venv whose interpreter came from an EL9 python module fails on an EL8 node with `GLIBC_2.34 not found` from the dynamic loader, and array tasks land wherever the scheduler puts them. Two ways out, and picking one is required:
+
+- **Build on EL8** — those binaries run on both generations. Simplest, and it needs no constraint.
+- **Pin with `--constraint`** — `sbatch --constraint=<feature> …`, or `day1.sh --constraint <feature>`, which applies it to the verify allocation too. Feature names are site-specific; `survey_cluster.sh`'s "node features" section lists them per node, deduped, and GPU-nodes-only, so read that rather than guessing at `el9`.
+
+`setup_env.sh` records the build generation to `$VENV/build_os`; both `--verify` and every array task compare against it and abort early with the fix rather than dying in the loader mid-sweep.
+
+**The CUDA module is chosen from what torch reports, not from Lmod's `(D)` default.** With 11.x through 13.x on the menu the default is very unlikely to be the major torch was built against, and a toolkit *newer* than torch's bundled runtime is precisely where Triton's first compile breaks. So the install phase now installs torch first, reads `torch.version.cuda`, then loads the highest matching `cuda/<major>.x`. `MODULE_CUDA` still overrides. Ten cases in `scripts/slurm/test_module_resolution.sh` pin this, including the one that matters: a cu12 torch must pick `cuda/12.4` over a `cuda/13.0(D)` default.
+
+**torch installs from PyPI by default**, no `--index-url`. Its linux wheels are CUDA-enabled and bundle their own runtime, and this keeps the cluster's torch in step with the CPU box's 2.13.x — which matters because `fla` tracks recent torch closely, and the old hardcoded `cu124` index lags well behind. Set `TORCH_INDEX` to pin a specific build if a driver ever requires it.
 
 **Partitions accepting any Slurm account** — no `--account` line needed; every other partition in the CoE table is restricted to one research group.
 
