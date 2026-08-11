@@ -301,8 +301,9 @@ print("fla importable and CUDA present -- gate will actually execute")
 PY
 
     echo "==> fla parity gate"
-    echo "    If this fails, fix src/lamr/layers/fla_backend.py -- it was written"
-    echo "    without a GPU available and its conventions are unverified guesses."
+    echo "    Passed 9/9 on an H100 (torch 2.13.0+cu130, triton 3.7.1) on"
+    echo "    2026-08-11. A failure here means this environment differs -- fix"
+    echo "    src/lamr/layers/fla_backend.py, never the test."
     python -m pytest tests/test_fla_parity.py -q -rs
 
     echo

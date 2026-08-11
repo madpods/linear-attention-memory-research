@@ -25,8 +25,9 @@
 #
 # It surveys the cluster, builds the GPU environment, runs both test suites,
 # checks the array size, and prints the submit command. It deliberately does
-# NOT submit unless asked: the fla adapter has never executed, and queueing 75
-# GPU jobs against an unverified kernel binding wastes an allocation.
+# NOT submit unless asked: queueing 75 GPU jobs before the parity gate has
+# passed in THIS environment wastes an allocation. The adapter is verified as of
+# 2026-08-11, but a rebuilt venv can pick up a different torch/triton/fla.
 set -uo pipefail
 
 PARTITION="${PARTITION:-dgxh}"
@@ -153,10 +154,10 @@ if [ "$SETUP_RC" -ne 0 ]; then
     echo
     if grep -q "test_fla_parity" setup.log 2>/dev/null; then
         cat <<'EOF'
-The fla parity gate failed. src/lamr/layers/fla_backend.py has never executed
-on a GPU, so this is a likely failure mode rather than a surprise. Its import
-names and signatures ARE verified against fla's source; what is unverified is
-numerical agreement. The failing assertion names the convention at fault:
+The fla parity gate failed. It passed 9/9 on an H100 with torch 2.13.0+cu130,
+triton 3.7.1 (2026-08-11), so a failure here means this environment differs --
+most likely a torch, triton or fla version picked up by a rebuilt venv. The
+failing assertion names the convention at fault:
 
   "output differs"  -> query scaling. We pass scale=1.0 because the layer
                        L2-normalizes q/k; fla defaults to d_k ** -0.5. If fla

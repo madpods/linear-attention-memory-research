@@ -137,7 +137,15 @@ Accounting: this user's associations are `coehpc` and `eecs`; `preempt`/`share` 
 
 The array defaults to `preempt` with `--requeue`. These are short jobs and the sweep skips configurations already in its CSV, so a preempted task resumes instead of repeating — which makes an uncapped preemptible queue strictly better than waiting on `share`'s 2-GPU cap. If preempt starves, `dgxh` is the fastest fallback; drop the array throttle to `%8` there, `%2` on `share`/`ampere`. User-wide limits are 1000 submitted / 400 running.
 
-**`src/lamr/layers/fla_backend.py` has never been executed**, though its signatures are now verified against `fla`'s source. Three conventions are reconciled there:
+**`src/lamr/layers/fla_backend.py` is verified on GPU as of 2026-08-11** — H100 80GB (MIG 4g.40gb), `torch 2.13.0+cu130`, `triton 3.7.1`, `fla` from PyPI. The parity gate passes 9/9. Of the three conventions guessed without a device, **all three were correct**; the gate found a fourth (dtype) that source-reading had not surfaced. Specifically confirmed by execution, not inspection:
+
+- layout — the unconditional `(B,H,T,D) → (B,T,H,D)` transpose is right, and the negative control shows the untransposed version is catastrophically wrong even when shapes match;
+- `scale=1.0` — right; fla's default `d_k ** -0.5` is wrong here by ~0.82 relative, so the choice is load-bearing rather than cosmetic;
+- state orientation — `[N, H, K, V]` is already `(d_k, d_v)`, so *not* transposing is right, tested with `d_k=32, d_v=16` so a transpose could not hide;
+- `initial_state` round-trips, which Stage 5's slow pass depends on;
+- and all three implementations agree — recurrent reference, portable chunked, and fla Triton — which is the premise the whole backend split rests on.
+
+Four conventions are reconciled there:
 
 - **Layout** — `fla` requires `(B, T, H, D)` and has *removed* `head_first` (passing it raises `DeprecationWarning`). This project works in `(B, H, T, D)`, so the adapter transposes unconditionally. This is the dangerous one: a wrong layout does not raise, it treats heads as timesteps and returns plausible nonsense.
 - **Scale** — `fla` defaults to `k.shape[-1] ** -0.5`; we pass `scale=1.0` because the layer L2-normalizes q/k itself.
@@ -156,6 +164,8 @@ Re-verified against upstream `main` on 2026-08-11: both import paths resolve (`c
 `REL_TOL` in the parity test was re-derived for this: 1e-3 was set assuming fp32 and is unreachable for bf16 kernels against an fp64 reference, since rounding q/k/v alone costs ~2e-3 before any arithmetic. It is now 3e-2 — and because loosening a tolerance is only honest if the gate still discriminates, three `test_negative_control_*` cases feed the wrong conventions (fla's default `scale`, raw `alpha` as `g`, and the untransposed layout with `H == T` so no shape error can catch it) and assert each lands 10× outside the bound. **If a negative control ever fails, the tolerance has stopped discriminating and the positive results mean nothing**, which is the property that keeps "never relax the test" intact rather than merely asserted.
 
 `tests/test_fla_parity.py` is the gate. Run it before any training on the GPU — until it passes, no GPU number is comparable to any CPU number, and interchangeability is the premise the whole backend split rests on. Each assertion names the convention it pins. **Fix `fla_backend.py`; never relax the test.** Note the gate skips itself when `fla` is unimportable, so `setup_env.sh --verify` asserts `fla_available()` first; otherwise pytest would exit 0 with the gate never having run.
+
+One lesson from running it, worth keeping if the negative controls are ever extended: a wrong convention can fail by *diverging* rather than by being numerically far off. Raw `alpha` passed as log-space `g` makes the per-step factor `exp(0.95) ≈ 2.59`, and `2.59**128 ≈ 1e52` overflows bf16 to `nan`. An `err > floor` assertion reads `nan > 0.3` as False and then reports "the tolerance has stopped discriminating" when the opposite was just demonstrated. `assert_detectably_wrong` therefore counts non-finite output as the stronger pass. The positive tests need no such handling — `nan < REL_TOL` is False, so a diverged result can never sneak through one.
 
 Two operational notes: `sweep_array.sbatch` deliberately leaves `--partition` and `--account` unset (run `sinfo -o "%P %G %m %l"` first, as the plan's Stage 0 says). And each array task writes its own CSV — concurrent appends to one file interleave mid-row — which `merge_results.py` stitches back together, keeping the last row per configuration so a re-run task overrides its partial.
 

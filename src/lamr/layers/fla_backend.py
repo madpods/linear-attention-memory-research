@@ -1,11 +1,14 @@
 """Adapter for ``flash-linear-attention``'s fused Triton kernels.
 
-Signatures here were verified against ``fla``'s source
-(``fla/ops/delta_rule/chunk.py`` and ``fla/ops/gated_delta_rule/chunk.py``),
-but this module has still never *executed* -- the development workstation has
-no CUDA device. ``tests/test_fla_parity.py`` remains the gate, and numerical
-agreement is what it establishes; reading a signature only rules out the
-mechanical mistakes.
+Verified on GPU 2026-08-11: H100 80GB (MIG 4g.40gb), ``torch 2.13.0+cu130``,
+``triton 3.7.1``, with ``tests/test_fla_parity.py`` passing 9/9. The three
+conventions originally guessed from source were all correct; running it found a
+fourth (dtype) that reading signatures had not surfaced, which is the case for
+keeping the gate rather than trusting the docstring below.
+
+The development workstation has no CUDA device, so the gate skips there. Any
+change to this module is unverified until it has been re-run on the cluster --
+see the HPC handoff section of CLAUDE.md.
 
 Conventions reconciled at this boundary
 ---------------------------------------

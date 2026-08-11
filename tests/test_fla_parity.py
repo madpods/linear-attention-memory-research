@@ -48,6 +48,32 @@ REL_TOL = 3e-2
 WRONG_CONVENTION_FLOOR = 10 * REL_TOL
 
 
+def assert_detectably_wrong(got: torch.Tensor, want: torch.Tensor, hint: str) -> None:
+    """Assert a deliberately wrong convention lands far outside ``REL_TOL``.
+
+    Non-finite output counts, and is the *stronger* result: it means the wrong
+    convention did not merely shift the answer but diverged. The raw-alpha-as-g
+    control does exactly that -- treating alpha ~0.95 as a log-decay makes the
+    per-step factor exp(0.95) ~ 2.59, so over T=128 steps the state grows like
+    2.59**128 ~ 1e52 and overflows bf16's ~3.4e38 range to inf/nan.
+
+    Counting only large *finite* errors would fail this test on a nan, reporting
+    "the tolerance has stopped discriminating" when the opposite was shown. Note
+    the positive tests are unaffected: ``nan < REL_TOL`` is False, so a diverged
+    result can never pass one.
+    """
+    finite = bool(torch.isfinite(got).all())
+    err = relative_error(got, want)
+    if not finite:
+        return  # diverged; wrongness demonstrated
+    assert err > WRONG_CONVENTION_FLOOR, (
+        f"{hint} differs by only {err:.2e}, inside {WRONG_CONVENTION_FLOOR:.0e}. "
+        "REL_TOL can no longer separate correct from wrong-convention, so the "
+        "positive tests in this file prove nothing. Fix the tolerance derivation "
+        "before trusting a green suite."
+    )
+
+
 def relative_error(got: torch.Tensor, want: torch.Tensor) -> float:
     return float((got - want).norm() / want.norm().clamp_min(1e-12))
 
@@ -204,11 +230,8 @@ def test_negative_control_default_scale_is_detectably_wrong():
         scale=None,  # fla then uses d_k ** -0.5
         output_final_state=True,
     )
-    err = relative_error(wrong.transpose(1, 2).double(), want)
-    assert err > WRONG_CONVENTION_FLOOR, (
-        f"fla's default scale differs from scale=1.0 by only {err:.2e}, which is "
-        f"inside {WRONG_CONVENTION_FLOOR:.0e}. REL_TOL can no longer distinguish "
-        "a query-scaling mistake -- do not trust the positive tests."
+    assert_detectably_wrong(
+        wrong.transpose(1, 2).double(), want, "fla's default scale vs scale=1.0"
     )
 
 
@@ -218,6 +241,11 @@ def test_negative_control_raw_alpha_as_g_is_detectably_wrong():
     alpha sits just under 1, so a raw alpha handed to a kernel expecting
     log(alpha) makes the decay exp(alpha) ~ 2.6 per step instead of ~0.95 -- the
     state grows where it should contract.
+
+    Observed on an H100 (2026-08-11): this overflows to nan rather than returning
+    a large finite error, because 2.59**128 ~ 1e52 exceeds bf16's range. That is
+    why :func:`assert_detectably_wrong` treats non-finite output as a pass -- the
+    convention is not subtly wrong here, it diverges.
     """
     from lamr.layers.fla_backend import KERNEL_DTYPE, _fla_gated
 
@@ -235,11 +263,8 @@ def test_negative_control_raw_alpha_as_g_is_detectably_wrong():
         scale=1.0,
         output_final_state=True,
     )
-    err = relative_error(wrong.transpose(1, 2).double(), want)
-    assert err > WRONG_CONVENTION_FLOOR, (
-        f"raw alpha as g differs from log(alpha) by only {err:.2e}, inside "
-        f"{WRONG_CONVENTION_FLOOR:.0e}. REL_TOL can no longer distinguish the "
-        "decay parameterization -- do not trust the positive tests."
+    assert_detectably_wrong(
+        wrong.transpose(1, 2).double(), want, "raw alpha as g vs log(alpha)"
     )
 
 
@@ -266,9 +291,4 @@ def test_negative_control_wrong_layout_is_detectably_wrong():
         scale=1.0,
         output_final_state=True,
     )
-    err = relative_error(wrong.double(), want)
-    assert err > WRONG_CONVENTION_FLOOR, (
-        f"treating heads as timesteps differs by only {err:.2e}, inside "
-        f"{WRONG_CONVENTION_FLOOR:.0e}. REL_TOL can no longer distinguish a "
-        "layout mistake -- do not trust the positive tests."
-    )
+    assert_detectably_wrong(wrong.double(), want, "heads treated as timesteps")
