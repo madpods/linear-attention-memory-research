@@ -275,37 +275,13 @@ PY
     # recording dance exists to prevent: Triton compiles kernels on FIRST CALL,
     # against the CUDA toolkit. So actually compile and run one, here, where the
     # error is legible -- rather than discovering it deep inside fla, mid-sweep.
+    #
+    # A separate FILE, not a heredoc: @triton.jit calls inspect.getsourcelines
+    # on the decorated function, so a kernel defined on stdin dies at decoration
+    # time with "@jit functions should be defined in a Python file" -- before
+    # compiling anything, and so without testing what this step is for.
     echo "==> triton kernel compile (the real toolkit check)"
-    python - <<'PY'
-import sys
-import torch
-import triton
-import triton.language as tl
-
-@triton.jit
-def _add1(x_ptr, y_ptr, n, BLOCK: tl.constexpr):
-    off = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
-    mask = off < n
-    tl.store(y_ptr + off, tl.load(x_ptr + off, mask=mask) + 1.0, mask=mask)
-
-try:
-    x = torch.zeros(128, device="cuda")
-    y = torch.empty_like(x)
-    _add1[(1,)](x, y, x.numel(), BLOCK=128)
-    torch.cuda.synchronize()
-    assert torch.allclose(y, torch.ones_like(y)), y
-except Exception as exc:
-    print("FATAL: Triton could not compile/run a trivial kernel:")
-    print(f"  {type(exc).__name__}: {exc}")
-    print()
-    print("This is the CUDA-toolkit mismatch the module recording guards")
-    print("against. torch was built against CUDA", torch.version.cuda,
-          "-- load a matching cuda/<major>.x module and rebuild:")
-    print("    export MODULE_CUDA=cuda/<version>")
-    print("    rm -rf", sys.prefix, "&& bash scripts/slurm/setup_env.sh --install")
-    sys.exit(1)
-print("triton compiled and ran a kernel on", torch.cuda.get_device_name(0))
-PY
+    python "$(dirname "$0")/triton_smoke.py"
 
     # The parity tests skip themselves when fla is unimportable. On a GPU node
     # that is a FAILURE, not a skip: it would let pytest exit 0 with the gate

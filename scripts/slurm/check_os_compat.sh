@@ -64,9 +64,18 @@ fi
 if [ "$run_major" -ge "$build_major" ]; then
     echo "os: built on $BUILD_OS, running on $RUN_OS -- newer, glibc is"
     echo "    backward compatible so this is expected to work."
-    echo "    If python or a recorded module is missing here, the per-generation"
-    echo "    module tree is the likely cause; pin the array with"
-    echo "    --constraint=el${build_major} and resubmit."
+    # Confirmed working on this cluster 2026-08-11: an EL8-built venv on an EL9
+    # node loaded python/3.13, gcc/12.5 and cuda/13.3 from the recorded names,
+    # so /usr/local/apps is shared across generations rather than per-generation
+    # in a way that breaks replay.
+    #
+    # Deliberately NOT suggesting --constraint=el${build_major} as the fix here:
+    # on this cluster the EL8 GPU nodes are M60/GTX980, which Triton cannot use,
+    # so pinning "back" to the build generation trades a module warning for no
+    # usable GPU at all.
+    echo "    If a recorded module is missing here, set MODULE_PYTHON /"
+    echo "    MODULE_CUDA / MODULE_GCC to names this generation carries and"
+    echo "    rebuild, rather than pinning back to el${build_major}."
     exit 0
 fi
 
