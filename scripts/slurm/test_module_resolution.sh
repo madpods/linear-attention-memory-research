@@ -105,6 +105,19 @@ run_case "preserves prior record" \
 cuda/12.1' \
     'python/3.9 cuda/12.1'
 
+# A host compiler is loaded alongside python: Triton compiles a C launcher stub
+# at runtime, and Rocky 8's system gcc is 8.5. Both must land in the record so
+# sweep_array.sbatch replays them.
+run_case "loads gcc with python" \
+    'python/3.13(D)
+gcc/12.5(D)
+gcc/15.2' '' 'python/3.13 gcc/12.5'
+
+# MODULE_GCC=none opts out without disturbing the python pick.
+MODULE_GCC=none run_case "MODULE_GCC=none skips gcc" \
+    'python/3.13(D)
+gcc/12.5(D)' '' 'python/3.13'
+
 # --- load_cuda_module -------------------------------------------------------
 #
 # The cluster carries CUDA 11.x through 13.x, so Lmod's (D) default is not
@@ -175,6 +188,42 @@ cuda/12.4' 13 '' ''
 run_cuda_case "MODULE_CUDA override"      "$ALL_CUDA" 12 'cuda/11.8' 'cuda/11.8'
 # torch reports no CUDA at all (a CPU wheel slipped in): must not abort.
 run_cuda_case "torch has no cuda"         "$ALL_CUDA" '' '' ''
+
+# The real module list from the OSU CoE HPC (modulefiles-8, captured
+# 2026-08-11). Note cuda/13.0 carries (D) while 13.1/13.2/13.3 also exist --
+# so Lmod's default is neither the newest nor, for a cu12 torch, the right
+# major. Both facts are why selection follows torch instead of the default.
+REAL_CUDA='cuda/9.2
+cuda/10.1
+cuda/10.2
+cuda/11.0
+cuda/11.1
+cuda/11.2
+cuda/11.3
+cuda/11.4
+cuda/11.5
+cuda/11.6
+cuda/11.7
+cuda/11.8
+cuda/12.0
+cuda/12.1
+cuda/12.2
+cuda/12.3
+cuda/12.4
+cuda/12.5
+cuda/12.6
+cuda/12.8
+cuda/12.9
+cuda/13.0(D)
+cuda/13.1
+cuda/13.2
+cuda/13.3'
+
+# sort -V must order 12.9 above 12.10-style strings and above 12.1; a plain
+# lexical sort would pick cuda/12.6 here, and cuda/11.8 over cuda/11.10.
+run_cuda_case "real list, cu12 -> 12.9"  "$REAL_CUDA" 12 '' 'cuda/12.9'
+run_cuda_case "real list, cu13 -> 13.3"  "$REAL_CUDA" 13 '' 'cuda/13.3'
+run_cuda_case "real list, cu11 -> 11.8"  "$REAL_CUDA" 11 '' 'cuda/11.8'
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

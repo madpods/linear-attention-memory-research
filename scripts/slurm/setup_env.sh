@@ -91,6 +91,15 @@ load_modules() {
         echo "    If python is module-provided here, set it explicitly:"
         echo "        export MODULE_PYTHON=python/<ver>"
     fi
+    # A host compiler, because Triton does not only emit PTX: it compiles a
+    # small C launcher stub at runtime, with the system compiler. Rocky 8 ships
+    # gcc 8.5, old enough to be a plausible source of a first-call failure that
+    # would look like a CUDA problem. The Lmod default here is gcc/12.5, which
+    # is also inside the host-compiler range both CUDA 12.x and 13.x accept.
+    # Set MODULE_GCC=none to skip, or to a specific version to pin.
+    if [ "${MODULE_GCC:-}" != "none" ]; then
+        load_one "${MODULE_GCC:-$(pick_module gcc || true)}"
+    fi
     return 0
 }
 

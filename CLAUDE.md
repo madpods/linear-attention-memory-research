@@ -78,13 +78,31 @@ python scripts/merge_results.py results/parts results/stage2.csv
 
 **Modules must match between build and run.** The cluster uses Lmod, and the CoE docs are explicit that modules used to build software into a python environment have to be loaded again to run it. Triton compiles kernels against the CUDA toolkit on first call, so a batch job missing the cuda module fails deep inside `fla` rather than at import — a confusing failure to debug mid-sweep. `setup_env.sh` therefore resolves modules, records them to `$VENV/modules.env`, and `sweep_array.sbatch` replays that file. If you rebuild the venv by hand, re-record that file too. `setup_env.sh --verify` compiles and runs a trivial Triton kernel for exactly this reason: `import triton` succeeding proves nothing about the failure mode, which is *first-call compilation*.
 
-### Cluster environment (confirmed 2026-08-11)
+### Cluster environment (module list captured 2026-08-11)
 
-Rocky Linux **8 and 9, mixed** (~60/40). Slurm. CUDA modules **11.x–13.x**, GCC 5.x–15.2, LLVM 14–20, NVHPC 24.x/25.x, Intel OneAPI 2022/2024/2025.
+Rocky Linux **8 and 9, mixed** (~60/40). Slurm (`slurm/current` is loaded by default, so the `module load slurm` fallback is belt-and-braces).
+
+**Module trees are per-OS-generation.** The captured `module avail` came from `/usr/local/apps/modulefiles-8` — note the `-8` — and carries explicitly suffixed variants like `Rstudio/2024.04_el8` alongside `Rstudio/2025.09_el9`. So a name recorded in `modules.env` on one generation is not guaranteed to resolve on the other, which is a second, independent reason the `build_os` check exists.
+
+What the resolver actually picks on this cluster, given Lmod's `(D)` defaults:
+
+| module | `(D)` default | what gets loaded | why |
+|---|---|---|---|
+| `python` | `python/3.13` | `python/3.13` | matches the CPU box's 3.13, and `pyproject` needs ≥3.10 |
+| `cuda` | **`cuda/13.0`** | `cuda/12.9` or `cuda/13.3` | follows `torch.version.cuda`, then newest of that major |
+| `gcc` | `gcc/12.5` | `gcc/12.5` | Triton compiles a C launcher stub at runtime; Rocky 8 ships gcc 8.5 |
+
+The CUDA row is the whole argument for not trusting `(D)`. This cluster's default is `cuda/13.0` while `13.1`/`13.2`/`13.3` also exist — so the default is neither the newest nor, for a cu12 torch, even the right major. The real list (`cuda/9.2` through `cuda/13.3`) is a test case in `test_module_resolution.sh`, which pins `cu12 → cuda/12.9` and `cu13 → cuda/13.3`.
+
+`gcc/12.5` is deliberately the `(D)` rather than the newest `gcc/15.2`: gcc 15 sits outside the host-compiler range CUDA 12.x/13.x accept. `MODULE_GCC=none` opts out.
+
+There is **no `pytorch`/`conda` module in play** — the venv is built from the python module, which is what makes the module record and the OS check load-bearing.
+
+One EL8 caveat to watch on first install: PyPI's torch wheels are `manylinux_2_28`, and Rocky 8's glibc 2.28 is exactly that floor. If pip ever fails to resolve a torch wheel there, the fallback is to build on EL9 and constrain the array to EL9 rather than to fight it.
 
 **The mixed OS is a live hazard, not trivia.** glibc is not forward compatible: a venv whose interpreter came from an EL9 python module fails on an EL8 node with `GLIBC_2.34 not found` from the dynamic loader, and array tasks land wherever the scheduler puts them. Two ways out, and picking one is required:
 
-- **Build on EL8** — those binaries run on both generations. Simplest, and it needs no constraint.
+- **Build on EL8** — those binaries run on both generations. Simplest, needs no constraint, and it is the *default outcome* if the login node is EL8: the module list captured on 2026-08-11 came from `modulefiles-8`, so at least one login node is EL8. Confirm with the `os-release` line `survey_cluster.sh` prints.
 - **Pin with `--constraint`** — `sbatch --constraint=<feature> …`, or `day1.sh --constraint <feature>`, which applies it to the verify allocation too. Feature names are site-specific; `survey_cluster.sh`'s "node features" section lists them per node, deduped, and GPU-nodes-only, so read that rather than guessing at `el9`.
 
 `setup_env.sh` records the build generation to `$VENV/build_os`; both `--verify` and every array task compare against it and abort early with the fix rather than dying in the loader mid-sweep.
