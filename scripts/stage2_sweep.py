@@ -45,10 +45,24 @@ MODES = ("linear", "delta", "gated_delta")
 PRESETS = {
     "quick": dict(kv_pairs=(4, 8), redundancies=(0.0, 0.5), steps=200),
     "kv-curve": dict(kv_pairs=(4, 8, 16, 32, 64), redundancies=(0.0,), steps=1500),
+    # THE reference grid. Re-fixed 2026-08-11 after the cliff and converge
+    # sweeps showed the original (1500 steps, kv up to 64) was measuring
+    # convergence rather than capacity. Both changes are load-bearing:
+    #
+    # steps 1500 -> 8000. capacity@95% moved 16 -> 16 -> 32 -> 32 over
+    #   1500/3000/6000/12000 and then held at 32 through 24000 and 48000, so it
+    #   converges by 6000; 8000 is that with margin. At 1500 the mid-cliff cells
+    #   were bimodal (47-point spreads) purely from undertraining.
+    #
+    # kv gains 48. The converged 95% crossings are ~35 (linear), ~56 (delta),
+    #   ~57 (gated_delta) -- ALL inside the old grid's 32 -> 64 jump, so
+    #   capacity@95% read 32 for every mode and could not discriminate at all.
+    #   kv=48 splits them (linear ~80%, delta ~97%). 96 stays as headroom; the
+    #   hard ceiling is 124, since seq_len=256 must hold 2*kv + num_queries.
     "full": dict(
-        kv_pairs=(4, 8, 16, 32, 64),
+        kv_pairs=(4, 8, 16, 32, 48, 64, 96),
         redundancies=(0.0, 0.25, 0.5, 0.75, 0.9),
-        steps=1500,
+        steps=8000,
     ),
     # Is the capacity cliff a CAPACITY limit or a TRAINING-BUDGET limit?
     #

@@ -37,7 +37,27 @@ What survives and is now *stronger*: **`delta` and `gated_delta` are indistingui
 
 **Do not run Stage 3 or 4 against the 1500-step curves.** The budget has to be re-fixed at a converged value first, and the reference grid regenerated — otherwise a mechanism that merely speeds up convergence will read as one that raises capacity, which is the exact confusion the whole design is meant to avoid.
 
-**A structural problem surfaces with it: the metric is close to saturating.** `seq_len=256` admits at most 124 kv pairs (`2·124 + 8 queries`), and `delta` is already at 91% on kv=64. If the converged capacity lands at 64 or above, `capacity@95%` has under 2× of headroom left, so a mechanism that doubles capacity could not be measured at all. The `converge` preset (kv ∈ {32, 64, 96} × steps ∈ {24000, 48000}) finds where capacity stops moving; the architecture then has to be re-fixed so the ceiling sits well inside the measurable kv range. Lowering `d_model` (64 → 32, so `d_k` 16 → 8 per head) is the cheaper lever than raising `seq_len`, since it reduces the ceiling *and* per-run cost, but it is a deliberate re-fix of the frozen config in plan principle 3 and invalidates every curve recorded so far.
+### Converged, and the premise claim does not survive it
+
+The `converge` preset (kv ∈ {32, 64, 96} × steps ∈ {24000, 48000}, 4 seeds, `r=0`) settles the budget question and produces a harder result.
+
+| | kv=32 | kv=64 | kv=96 | `capacity@95%` |
+|---|---|---|---|---|
+| `linear` @48k | 98.4% | 61.2% | 1.3% | **32** |
+| `delta` @48k | 99.7% | 93.4% | 82.7% | **32** |
+| `gated_delta` @48k | 99.4% | 93.8% | 83.0% | **32** |
+
+**Converged.** `capacity@95%` is 32 at 6000, 12000, 24000 and 48000 steps, and kv=96 even ticks *down* from 24k to 48k. The budget question is closed: convergence by ~6000 steps.
+
+**Linear attention reaches the same `capacity@95%` as both error-corrected rules.** At 1500 steps `linear` looked like a floor (10% at kv=16); converged, it matches on the headline metric. So the reproduction of "error-corrected writes buy capacity, plain linear attention fails" was, at the original budget, **substantially a statement about convergence rate**. Error-corrected writes *do* buy capacity — but further out than the original grid could see (kv=64: 93.4% vs 61.2%; kv=96: 82.7% vs 1.3%), and the headline metric could not detect it.
+
+**The cause was grid resolution, not the architecture.** The converged 95% crossings are ~35 (`linear`), ~56 (`delta`), ~57 (`gated_delta`) — all three inside the old grid's 32→64 gap, which is exactly why `capacity@95%` collapsed to 32 for every mode. No `d_model` change is needed; one extra kv point fixes it (`linear` ~80% at kv=48, `delta` ~97%).
+
+**The reference config is therefore re-fixed once, deliberately** (plan principle 3): `steps` 1500 → **8000**, and `kv_pairs` gains **48** → `(4, 8, 16, 32, 48, 64, 96)`. That is 105 configs, ~140 s per run, ~70 min of wall clock for 4 seeds. The hard kv ceiling is 124 (`2·kv + num_queries ≤ seq_len=256`), so `delta`'s ~56 crossing leaves ~2.2× headroom for a mechanism to demonstrate an improvement — tight but workable, and preferable to re-tuning `d_model` on top of everything else.
+
+**All Stage 2 numbers recorded before this re-fix are superseded**, including `results/stage2_gpu_summary.csv` and `docs/stage2_results.html`. `delta ≈ gated_delta` is the one conclusion that has held at every budget and every kv tested and needs no re-verification.
+
+**Throughput was also misread earlier.** Fully JIT-amortized at 48k steps: `delta` 705k tok/s, `gated_delta` 653k, `linear` 487k. So `fla`'s fused bf16 kernels are *faster* than the portable fp32 chunked path — the reverse of the earlier reading, which was taken from runs short enough that compilation dominated. A 48000-step run takes 9.4 min, not the 36 min estimated from the compile-contaminated figure.
 
 - `src/lamr/data/mqar.py` — redundancy-parameterized MQAR generator (Stage 1).
 - `src/lamr/layers/recurrent.py` — sequential reference update rules; correctness ground truth.

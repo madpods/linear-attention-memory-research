@@ -17,10 +17,11 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
 #SBATCH --gres=gpu:1
-#SBATCH --array=0-74%20
+#SBATCH --array=0-104%20
 #
-# Stage 2 full grid on the OSU CoE HPC: 3 modes x 5 redundancies x 5 kv sizes
-# = 75 runs. Verify the array size still matches before submitting:
+# Stage 2 full grid on the OSU CoE HPC: 3 modes x 5 redundancies x 7 kv sizes
+# = 105 runs at 8000 steps (~140s each). Verify the array size still matches
+# before submitting -- the grid was re-fixed once already:
 #
 #     python scripts/stage2_sweep.py --preset full --count
 #
