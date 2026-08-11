@@ -62,7 +62,10 @@ There are therefore **three** implementations of the same update rule, and they 
 
 The cluster is the **Oregon State CoE HPC** (Slurm).
 
+Remote: `git@github.com:madpods/linear-attention-memory-research.git` (private).
+
 ```bash
+gh repo clone madpods/linear-attention-memory-research && cd linear-attention-memory-research
 srun --partition=dgxh --gres=gpu:1 --time=01:00:00 --pty bash   # interactive GPU node
 bash scripts/slurm/setup_env.sh          # venv + CUDA torch + fla, runs both suites
 python scripts/stage2_sweep.py --preset full --count   # must equal the sbatch array size
