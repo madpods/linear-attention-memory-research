@@ -1,6 +1,6 @@
 """Stage 2 baseline sweeps -- the reference curves every later stage cites.
 
-Two presets matter:
+Three presets matter:
 
 ``kv-curve``
     r=0, recall vs num_kv_pairs for all three baselines. This is the plan's
@@ -11,14 +11,24 @@ Two presets matter:
 
 ``full``
     The same, crossed with r in {0, 0.25, 0.5, 0.75, 0.9}. This is the
-    reference grid Stages 3-6 compare against.
+    reference grid Stages 3-6 compare against. **Run it at several seeds.**
+    Mid-cliff cells are bimodal, not noisy -- kv=32 spreads ~47 points over 4
+    seeds -- so a single seed there is a coin flip, and one already reversed the
+    delta / gated_delta ordering between two otherwise-matched runs.
 
-Architecture hyperparameters are fixed here once and must not drift between
-stages (plan principle 3). Rows are appended to CSV and completed
-configurations are skipped, so a long sweep can be interrupted and resumed.
+``cliff``
+    steps as a grid axis, to test whether the capacity cliff is a capacity
+    limit or a training-budget limit. See the comment on the preset.
+
+Architecture hyperparameters are otherwise fixed here once and must not drift
+between stages (plan principle 3); ``cliff`` varies ``steps`` deliberately and
+is a diagnostic, not a source of reference curves. Rows are appended to CSV and
+completed configurations are skipped, so a long sweep can be interrupted and
+resumed.
 
     python scripts/stage2_sweep.py --preset kv-curve
     python scripts/stage2_sweep.py --preset full --steps 4000
+    python scripts/stage2_sweep.py --preset cliff --modes delta gated_delta
 """
 
 from __future__ import annotations
@@ -39,6 +49,27 @@ PRESETS = {
         kv_pairs=(4, 8, 16, 32, 64),
         redundancies=(0.0, 0.25, 0.5, 0.75, 0.9),
         steps=1500,
+    ),
+    # Is the capacity cliff a CAPACITY limit or a TRAINING-BUDGET limit?
+    #
+    # Over 4 seeds the mid-cliff cells are bimodal, not noisy: kv=32 at r=0 has
+    # a 47-point spread around a 62% mean, i.e. some seeds learn it and some do
+    # not. If more steps collapse that spread upward, then 1500 steps was the
+    # binding constraint and "effective capacity" was measuring the optimizer,
+    # not the state matrix -- which would move every reference curve and change
+    # what Stages 3-6 are compared against. Cheap to settle: ~11 min of wall
+    # clock at 14-way concurrency.
+    #
+    #   sbatch --array=0-35%14 --export=ALL,PRESET=cliff,SEED=0 \
+    #          scripts/slurm/sweep_array.sbatch
+    #
+    # Run it for several seeds; a single seed cannot distinguish a collapsed
+    # spread from a lucky draw, which is the whole point.
+    "cliff": dict(
+        kv_pairs=(16, 32, 64),
+        redundancies=(0.0,),
+        steps=1500,
+        steps_list=(1500, 3000, 6000, 12000),
     ),
 }
 
@@ -92,10 +123,22 @@ def main() -> None:
     args = parser.parse_args()
 
     preset = PRESETS[args.preset]
-    steps = args.steps or preset["steps"]
     out = Path(args.out)
 
-    grid = list(itertools.product(args.modes, preset["redundancies"], preset["kv_pairs"]))
+    # steps is normally fixed (plan principle 3) and so not a grid axis. The
+    # cliff preset makes it one deliberately, to ask whether the fixed budget is
+    # what the capacity numbers are actually measuring. An explicit --steps
+    # overrides either way.
+    if args.steps:
+        steps_list: tuple[int, ...] = (args.steps,)
+    else:
+        steps_list = tuple(preset.get("steps_list", (preset["steps"],)))
+
+    grid = list(
+        itertools.product(
+            args.modes, preset["redundancies"], preset["kv_pairs"], steps_list
+        )
+    )
 
     if args.count:
         print(len(grid))
@@ -107,9 +150,9 @@ def main() -> None:
             )
         grid = [grid[args.only_index]]
 
-    print(f"preset={args.preset} runs={len(grid)} steps={steps} -> {out}")
+    print(f"preset={args.preset} runs={len(grid)} steps={sorted(steps_list)} -> {out}")
 
-    for i, (mode, r, kv) in enumerate(grid, start=1):
+    for i, (mode, r, kv, steps) in enumerate(grid, start=1):
         cfg = TrainConfig(
             mode=mode,
             redundancy_r=r,
@@ -126,9 +169,9 @@ def main() -> None:
             **FIXED,
         )
         if already_done(out, cfg):
-            print(f"[{i}/{len(grid)}] skip (done): {mode} r={r} kv={kv}")
+            print(f"[{i}/{len(grid)}] skip (done): {mode} r={r} kv={kv} steps={steps}")
             continue
-        print(f"[{i}/{len(grid)}] {mode} r={r} kv={kv}")
+        print(f"[{i}/{len(grid)}] {mode} r={r} kv={kv} steps={steps}")
         train(cfg, verbose=True)
 
 
