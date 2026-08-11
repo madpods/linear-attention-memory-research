@@ -34,6 +34,24 @@ state layout
     is needed. (The gated kernel exposes ``state_v_first`` to flip this; leave
     it at its default.)
 
+dtype
+    ``chunk_delta_rule`` **asserts** ``q.dtype != torch.float32`` -- "does not
+    support float32. Please use bfloat16." So the kernels are cast to
+    :data:`KERNEL_DTYPE` on the way in and the results cast back to the caller's
+    dtype, keeping the backend interchangeable with the fp32 CPU paths at the
+    interface even though the arithmetic is not.
+
+    The gated kernel does *not* carry that assert and will run in fp32. It is
+    cast anyway, deliberately: Stage 2's primary comparison is delta against
+    gated_delta, and if one ran bf16 while the other ran fp32 that comparison
+    would be partly about precision rather than about the update rule, which is
+    the one thing it is supposed to isolate.
+
+    This is a real numerical difference from the CPU baselines, not a formality
+    -- see the note in CLAUDE.md. The sweep re-runs every ``r=0`` configuration
+    on GPU, and those 15 rows are the built-in control for whether bf16 moves
+    recall at all.
+
 ``use_qk_l2norm_in_kernel`` is left ``False`` because the layer normalizes q/k
 itself. Folding it into the kernel would be faster, but it is a change to make
 after parity is established, not before.
@@ -43,6 +61,12 @@ from __future__ import annotations
 
 import torch
 from torch import Tensor
+
+#: Dtype the fla kernels are called in. bf16 rather than fp16 because it is what
+#: fla's own examples and tests use, and because the state matrix accumulates
+#: over the whole sequence -- bf16's wider exponent range matters more there than
+#: fp16's extra mantissa bits.
+KERNEL_DTYPE = torch.bfloat16
 
 _IMPORT_ERROR: Exception | None = None
 
@@ -79,8 +103,8 @@ def _require() -> None:
 
 
 def _to_fla(x: Tensor) -> Tensor:
-    """``(B, H, T, ...)`` -> ``(B, T, H, ...)``."""
-    return x.transpose(1, 2)
+    """``(B, H, T, ...)`` -> ``(B, T, H, ...)``, in the kernels' dtype."""
+    return x.transpose(1, 2).to(KERNEL_DTYPE)
 
 
 def fla_delta_rule(
@@ -109,10 +133,12 @@ def fla_delta_rule(
         _to_fla(v),
         _to_fla(beta),
         scale=1.0,
-        initial_state=initial_state,
+        initial_state=None if initial_state is None else initial_state.to(KERNEL_DTYPE),
         output_final_state=True,
     )
-    return out.transpose(1, 2), state
+    # Back to the caller's dtype and axis order. The state is already
+    # (B, H, d_k, d_v) and must not be transposed; only its dtype changes.
+    return out.transpose(1, 2).to(q.dtype), state.to(q.dtype)
 
 
 def fla_gated_delta_rule(
@@ -136,6 +162,8 @@ def fla_gated_delta_rule(
     mismatch from mattering.
     """
     _require()
+    # log() in the caller's (wider) dtype, then cast -- log of an already-bf16
+    # alpha would round twice, and alpha sits close to 1 where log is steep.
     g = alpha.clamp_min(torch.finfo(alpha.dtype).tiny).log()
     out, state = _fla_gated(
         _to_fla(q),
@@ -144,7 +172,7 @@ def fla_gated_delta_rule(
         g=_to_fla(g),
         beta=_to_fla(beta),
         scale=1.0,
-        initial_state=initial_state,
+        initial_state=None if initial_state is None else initial_state.to(KERNEL_DTYPE),
         output_final_state=True,
     )
-    return out.transpose(1, 2), state
+    return out.transpose(1, 2).to(q.dtype), state.to(q.dtype)

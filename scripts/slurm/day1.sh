@@ -170,6 +170,13 @@ numerical agreement. The failing assertion names the convention at fault:
                        state_v_first on the gated kernel first; it flips this.
   "gated ... differs"-> decay parameterization. fla takes g = log(alpha) while
                        use_gate_in_kernel is False (the default).
+  "does not support   -> dtype. chunk_delta_rule asserts against fp32; the
+   float32"              adapter casts to bf16 and back. If you see this, the
+                         cast was removed or bypassed.
+  negative_control    -> NOT a convention bug. REL_TOL has stopped separating
+   failure               correct from wrong-convention, so the positive tests
+                         prove nothing. Fix the tolerance derivation, and do
+                         not trust a green suite until it passes.
 
 Fix fla_backend.py, then re-run just the gate:
 EOF
