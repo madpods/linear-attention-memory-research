@@ -52,9 +52,12 @@ def test_delta_rule_output_matches_reference():
 
     err = relative_error(got.double(), want)
     assert err < REL_TOL, (
-        f"fla delta rule output differs by {err:.2e}. Most likely cause: the "
-        "query scaling convention. This project passes scale=1.0 because the "
-        "layer L2-normalizes q and k; fla defaults to d_k ** -0.5."
+        f"fla delta rule output differs by {err:.2e}. Two suspects, in order:\n"
+        "  1. Layout. fla requires (B, T, H, D) and removed head_first, so the "
+        "adapter transposes unconditionally. A wrong layout does NOT raise -- "
+        "the kernel treats heads as timesteps and returns plausible nonsense.\n"
+        "  2. Query scaling. We pass scale=1.0 because the layer L2-normalizes "
+        "q and k; fla defaults to d_k ** -0.5. An error near sqrt(d_k) points here."
     )
 
 
@@ -75,11 +78,13 @@ def test_gated_delta_rule_output_matches_reference():
 
 
 def test_final_state_orientation_is_dk_by_dv():
-    """Pins the state layout, which is the adapter's least certain guess.
+    """Pins the state layout.
 
-    This project keeps the plan's ``(d_k, d_v)``. If fla hands back the
-    transpose, the fix is to transpose in ``fla_backend``, never to change the
-    convention downstream -- Stage 4 indexes this matrix by key.
+    fla documents ``[N, H, K, V]``, which already matches the plan's
+    ``(d_k, d_v)``, so the adapter does not transpose the state. If that
+    changes upstream -- the gated kernel has a ``state_v_first`` flag that
+    flips it -- fix ``fla_backend``, never the convention downstream: Stage 4
+    indexes this matrix by key.
     """
     d_k, d_v = 32, 16  # deliberately unequal so a transpose cannot hide
     q, k, v, beta = make_inputs(d_k=d_k, d_v=d_v)

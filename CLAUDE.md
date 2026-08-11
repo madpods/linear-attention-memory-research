@@ -54,7 +54,7 @@ There are therefore **three** implementations of the same update rule, and they 
 | `chunked.py` | ~8.5× | anywhere | local sweeps; same math, dense matmuls + triangular solve |
 | `fla` Triton | fastest | CUDA only | real training runs |
 
-`tests/test_chunked_parity.py` enforces the first-to-second agreement. When `fla` first becomes available, extend that file with the same shape of test rather than writing a new one — and note `fla` uses a transposed `(d_v, d_k)` state layout for some kernels while this project keeps the plan's `(d_k, d_v)`. Transpose at the boundary; never silently switch conventions.
+`tests/test_chunked_parity.py` enforces the first-to-second agreement; `tests/test_fla_parity.py` enforces the third. `fla` returns state as `[N, H, K, V]`, which already matches the plan's `(d_k, d_v)` — no transpose needed, though the gated kernel's `state_v_first` flag would flip it. What *does* need converting is the time/head axis order; see `fla_backend.py`.
 
 `chunked.py` is also where Stage 4 lands. Cluster/pointer write-gating has to be expressed against the within-chunk triangular structure eventually, and the derivation in that module's docstring is the thing to extend.
 
@@ -89,9 +89,13 @@ python scripts/merge_results.py results/parts results/stage2.csv
 
 The array defaults to `preempt` with `--requeue`. These are short jobs and the sweep skips configurations already in its CSV, so a preempted task resumes instead of repeating — which makes an uncapped preemptible queue strictly better than waiting on `share`'s 2-GPU cap. If preempt starves, `dgxh` is the fastest fallback; drop the array throttle to `%8` there, `%2` on `share`/`ampere`. User-wide limits are 1000 submitted / 400 running.
 
-**`src/lamr/layers/fla_backend.py` has never been executed.** It was written without a CUDA device, so its three convention guesses are unverified: query scaling (this project passes `scale=1.0` because the layer L2-normalizes q/k, while `fla` defaults to `d_k ** -0.5`), tensor layout (`head_first` is detected by signature inspection, since `fla` changed its default from `(B,H,T,D)` to `(B,T,H,D)`), and decay parameterization (`fla` takes `g = log(alpha)`, not `alpha`).
+**`src/lamr/layers/fla_backend.py` has never been executed**, though its signatures are now verified against `fla`'s source. Three conventions are reconciled there:
 
-`tests/test_fla_parity.py` is the gate. Run it before any training on the GPU — until it passes, no GPU number is comparable to any CPU number, and interchangeability is the premise the whole backend split rests on. Each assertion names the convention it pins, so a failure identifies the wrong guess. **Fix `fla_backend.py`; never relax the test.** In particular, if `fla` returns a transposed `(d_v, d_k)` state, transpose it inside the adapter rather than changing the convention downstream — Stage 4 indexes that matrix by key.
+- **Layout** — `fla` requires `(B, T, H, D)` and has *removed* `head_first` (passing it raises `DeprecationWarning`). This project works in `(B, H, T, D)`, so the adapter transposes unconditionally. This is the dangerous one: a wrong layout does not raise, it treats heads as timesteps and returns plausible nonsense.
+- **Scale** — `fla` defaults to `k.shape[-1] ** -0.5`; we pass `scale=1.0` because the layer L2-normalizes q/k itself.
+- **Decay** — the gated kernel takes `g`, log-space, positioned *before* `beta`. Passed by keyword so the order mismatch cannot bite.
+
+`tests/test_fla_parity.py` is the gate. Run it before any training on the GPU — until it passes, no GPU number is comparable to any CPU number, and interchangeability is the premise the whole backend split rests on. Each assertion names the convention it pins. **Fix `fla_backend.py`; never relax the test.** Note the gate skips itself when `fla` is unimportable, so `setup_env.sh --verify` asserts `fla_available()` first; otherwise pytest would exit 0 with the gate never having run.
 
 Two operational notes: `sweep_array.sbatch` deliberately leaves `--partition` and `--account` unset (run `sinfo -o "%P %G %m %l"` first, as the plan's Stage 0 says). And each array task writes its own CSV — concurrent appends to one file interleave mid-row — which `merge_results.py` stitches back together, keeping the last row per configuration so a re-run task overrides its partial.
 
