@@ -126,7 +126,8 @@ Stage 2  baseline curves (linear attn, DeltaNet, ├─ Stage 2 curves are the r
          Gated DeltaNet) over the r sweep       ─┘  every later stage compares against
 Stage 3  kernel feature-map ablation (§17)  — independent of 4/5; sets d_φ budget
 Stage 4  clustering / pointer write-gating (§2)  — hardest to parallelize
-Stage 5  entropy-based eviction (§13)            — builds on Stage 4's codebook
+Stage 4b residual matrix R (addendum 01)         — build before Stage 5, not after
+Stage 5  entropy-based eviction (§13)  — CONDITIONAL: may be dropped, see below
 Stage 6  surprise-heads × correlation-heads split (§9) — needs Stage 4 + new task variant
 Stage 7  distilled predictor (§16) — stretch; needs Stages 4–5 working as the teacher
 Stage 8  Slurm scale-up
@@ -145,6 +146,23 @@ The plan uses a consistent notation that code should follow:
 - `β` — write strength. Note §12 uses `β1`/`β2` for Hymba's *learned per-channel output-fusion* weights; different quantity, same letter, as in the source papers.
 - `r` — redundancy parameter of the new MQAR generator (fraction of keys assigned near-duplicate cluster values). This is the novel evaluation axis this project adds; `r=0` must reproduce vanilla MQAR.
 - `τ` — cluster-match similarity threshold. `d_φ` — feature-map output dimension. `N` — slow-pass re-evaluation interval.
+- `R` — the Stage 4b residual state matrix (`d_k × d_v`), distinct from `S`.
+
+**Three-way collision on the letter r.** `redundancy_r` is the data parameter; `R` is the residual matrix; and the residual quantity `v − c` is the same *kind* of object as the delta-rule error `e = v − v_read`. Never name a variable `r` in code touching any two of these — use `redundancy_r`, `resid_matrix`, and `resid_target`.
+
+## Addendum 01 — residual matrix (Stage 4b)
+
+`addendum_01_residual_matrix.md` extends Stage 4 with a second state matrix `R` holding the per-key residual `v − c` that the coarse cluster prediction misses, read as `v̂ = c(k) + q^T R`. It is RVQ's coarse/fine split applied to associative memory, and it reorders the build: **4b lands before Stage 5, and if its drift test succeeds Stage 5 becomes optional.** Read that file before touching Stage 4.
+
+Three things to settle before building it — the first is a correctness issue, the second could invalidate the headline result:
+
+**1. The read path for `c` is underspecified.** Centroids live in *value* space and are matched by `v` at write time, but at read time only `q` is available. `v̂ = c(k) + q^T R` therefore assumes a `q → cluster` lookup the addendum does not specify, and the plan's "pointer table (key → cluster id)" is not differentiable as written. Something must carry that association — e.g. a `d_k × num_clusters` assignment state written by delta rule, read as `softmax(q^T P) @ centroids`. **This is the same unresolved read-side question as §10/§11 and consolidated risk #4**, now with a concrete forcing function; decide and document it rather than letting it default.
+
+**2. Matched parameter count is the wrong control here.** `S` plus `R` is 2× the *state* of the Gated DeltaNet baseline, plus the codebook. `S` and `R` are activations, not weights, so parameter count barely moves and principle #3's control silently fails to control anything. Since the project's entire claim is about capacity per unit of state, beating a baseline that has half the state would prove nothing. **Add a matched-state control** — Gated DeltaNet with doubled `d_v` (or doubled heads) — and report against both.
+
+**3. The RVQ precedent is directional, not dispositive.** The variance argument is sound: residuals are lower-variance and less correlated across keys than raw values, and rank-limited memory represents them more faithfully. But RVQ's second stage is another *codebook* quantizing the same vector, whereas `R` is rank-limited associative storage holding per-key corrections for many keys at once — a different and harder load. The bit-budget accounting that makes RVQ beat a flat codebook does not transfer directly. Treat it as motivation, not as evidence, and let the `redundancy_r` sweep settle it.
+
+The addendum's own honest note stands and is testable immediately: at `redundancy_r = 0` the residual collapses to the raw value, the cluster contributes nothing, and the mechanism pays two writes for what one plain delta-rule write already did. Stage 2's `r=0` curves are the reference for exactly that check.
 
 ## Risks to hold in view while implementing
 
