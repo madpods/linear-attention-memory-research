@@ -105,6 +105,41 @@ list_modules gcc
 section "modules: torch/conda, if the cluster provides them"
 for m in pytorch conda miniconda anaconda mamba; do list_modules "$m"; done
 
+section "apptainer / singularity (container alternative to the venv path)"
+# A container sidesteps the EL8/EL9 glibc split and module resolution entirely,
+# and an NGC PyTorch image ships torch+CUDA+Triton tested together. The three
+# things that decide whether it is viable here:
+#   1. is the runtime present, and what version;
+#   2. can this user BUILD images, or only run them -- unprivileged build needs
+#      --fakeroot, which many sites restrict to admins. If build is blocked,
+#      `apptainer pull` of a prebuilt image still works;
+#   3. is there disk for a ~20GB image (see the storage section below).
+for c in apptainer singularity; do
+    if have "$c"; then
+        echo "--- $c ---"
+        "$c" --version 2>&1 | head -1
+        echo "config (cache/tmp dirs honoured via APPTAINER_CACHEDIR / TMPDIR):"
+        env | grep -Ei '^(APPTAINER|SINGULARITY)_' | sort || echo "  (no env overrides set)"
+    else
+        echo "$c: not on PATH here"
+    fi
+done
+echo
+echo "fakeroot / unprivileged build capability:"
+if have apptainer; then
+    # Does not build anything; asks whether the subuid mapping exists at all.
+    grep -q "^$(whoami):" /etc/subuid 2>/dev/null \
+        && echo "  /etc/subuid has an entry for $(whoami) -- --fakeroot build likely allowed" \
+        || echo "  no /etc/subuid entry -- expect to PULL prebuilt images, not build them"
+else
+    echo "  (apptainer absent; skipping)"
+fi
+echo
+echo "If containers are viable, the base image to want is an NGC PyTorch one"
+echo "(torch + CUDA + Triton tested together), with flash-linear-attention"
+echo "layered on top -- NGC does not ship it. Check the image's torch version"
+echo "against what fla requires before committing to a tag."
+
 section "storage and quota"
 echo "--- home ---"; df -h "$HOME" 2>/dev/null
 for d in /scratch /nfs /data "$HOME/../scratch"; do
