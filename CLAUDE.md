@@ -86,15 +86,15 @@ Rocky Linux **8 and 9, mixed** (~60/40). Slurm (`slurm/current` is loaded by def
 
 What the resolver actually picks on this cluster, given Lmod's `(D)` defaults:
 
-| module | `(D)` default | what gets loaded | why |
+**`module -t avail` emits no `(D)` markers on this cluster.** The columnar `module avail` shows them, terse output does not — so `pick_module`'s `(D)` branch never fires here and its *fallback* is what actually runs. That matters because the fallback is "highest version", which is right for one module and wrong for another:
+
+| module | available | what gets loaded | why |
 |---|---|---|---|
-| `python` | `python/3.13` | `python/3.13` | matches the CPU box's 3.13, and `pyproject` needs ≥3.10 |
-| `cuda` | **`cuda/13.0`** | `cuda/12.9` or `cuda/13.3` | follows `torch.version.cuda`, then newest of that major |
-| `gcc` | `gcc/12.5` | `gcc/12.5` | Triton compiles a C launcher stub at runtime; Rocky 8 ships gcc 8.5 |
+| `python` | 3.8 – 3.13 | `python/3.13` | highest is right. Note `python3` on PATH is 3.6.8, so the module is mandatory, and `sort -V` is required — a lexical sort picks 3.9 over 3.13 |
+| `cuda` | 9.2 – 13.3 | `cuda/12.9` or `cuda/13.3` | neither highest nor default: follows `torch.version.cuda`, then newest of *that major* |
+| `gcc` | 4.9.4 – 15.2 | `gcc/12.5` | highest is **wrong** — `gcc/15.2` is newer than any host compiler CUDA 12.x/13.x accepts, so `pick_capped_module` caps the major at `GCC_MAX_MAJOR` (12). Triton compiles a C launcher stub at runtime and Rocky 8 ships gcc 8.5, so a module is still needed |
 
-The CUDA row is the whole argument for not trusting `(D)`. This cluster's default is `cuda/13.0` while `13.1`/`13.2`/`13.3` also exist — so the default is neither the newest nor, for a cu12 torch, even the right major. The real list (`cuda/9.2` through `cuda/13.3`) is a test case in `test_module_resolution.sh`, which pins `cu12 → cuda/12.9` and `cu13 → cuda/13.3`.
-
-`gcc/12.5` is deliberately the `(D)` rather than the newest `gcc/15.2`: gcc 15 sits outside the host-compiler range CUDA 12.x/13.x accept. `MODULE_GCC=none` opts out.
+Both the CUDA and gcc rows are arguments against trusting either `(D)` or "newest". The real captured lists are test cases in `test_module_resolution.sh`, pinning `cu12 → cuda/12.9`, `cu13 → cuda/13.3`, and `python/3.13 + gcc/12.5` from submit-a's exact terse output. `MODULE_GCC=none` opts out; `GCC_MAX_MAJOR` raises the cap.
 
 There is **no `pytorch`/`conda` module in play** — the venv is built from the python module, which is what makes the module record and the OS check load-bearing.
 
@@ -105,13 +105,17 @@ One EL8 caveat to watch on first install: PyPI's torch wheels are `manylinux_2_2
 - **built on EL8, running on EL9 → fine.** Binaries linked against the older glibc resolve against the newer one.
 - **built on EL9, running on EL8 → fatal.** `GLIBC_2.34 not found` from the dynamic loader, since EL8 ships 2.28.
 
-**EL9 is the chosen default** (`#SBATCH --constraint=el9`, and `day1.sh` defaults to matching). The tempting argument for EL8 — that it holds ~60% of the cluster and its venv runs everywhere — weighs the wrong quantity. Node share across the whole cluster is irrelevant when every run is on a GPU node; what matters is which generation the *GPU* partitions carry, and the newer accelerators are the ones on EL9. The decisive point is toolchain currency: PyPI torch ships `manylinux_2_28` wheels and EL8's glibc 2.28 is *exactly* that floor with no headroom, while newer torch/triton releases are moving to `manylinux_2_34`, which EL8 cannot satisfy at all. Building on EL8 buys node breadth this project never uses and pays for it in the exact dependency `fla` tracks most closely.
+**The settled configuration: build on the EL8 login node, run on EL9 nodes.** The survey resolved this. `submit-a` is Rocky 8.10 / glibc 2.28, so anything built there is EL8 — and that is *fine*, because glibc is backward compatible and an EL8 venv runs on EL9 nodes. Meanwhile the array targets EL9 because the EL8 GPU nodes are M60 and GTX980 hardware modern Triton cannot use at all; every useful accelerator (A40, L40S, V100, H100, H200, RTX 6000/8000) is EL9. So no EL9 submit host is needed and `--build-in-alloc` stays unused.
 
-EL8 remains a supported fallback — `day1.sh --constraint el8`, and `sbatch --constraint=el8 …` — worth taking if the EL9 GPU queue is starved or a torch wheel refuses to resolve.
+This is exactly the direction `check_os_compat.sh` permits while rejecting the reverse, and `day1.sh`'s preflight now allows it too — it fails only when the login node is *newer* than the target. Earlier drafts of both blocked any mismatch, which would have refused the best configuration available here.
 
-The Slurm feature names are confirmed **`el8` / `el9`**, e.g. `srun -p preempt --constraint=el8 --pty tcsh`. `day1.sh --constraint <name>` applies it to the verify allocation and the array together.
+Feature names are confirmed **`el8` / `el9`**, e.g. `srun -p preempt --constraint=el8 --pty tcsh`.
 
-**A venv's generation is fixed by where it is built, and `day1.sh` builds on the login node.** The captured module list came from `modulefiles-8`, so the login node in question is EL8 — which would silently produce an EL8 venv while the array asks for `el9`. `day1.sh` now compares the two before spending 10–20 minutes on pip and stops with three options: use an EL9 submit host (preferred, since pip needs outbound network that login nodes reliably have), pass `--build-in-alloc` to run the install inside an `srun` on an EL9 node, or accept EL8 and constrain to it. **Check whether an EL9 login node exists first** — that determines which of the three is actually available, and `survey_cluster.sh` prints the login node's `os-release` for exactly this.
+**The array pins a single GPU class: `--constraint=el9&a40`.** Both halves matter, and the second is methodological rather than operational. `preempt`'s EL9 GPU nodes span `gtx1080` (sm_61) to `h200` (sm_90); Triton requires sm_70+, so the four gtx1080 nodes would fail outright and `--requeue` could return a task to one. More importantly, **tokens/sec is a Stage 2 deliverable**, and measured across V100/A40/H100 it is not a comparable column — which defeats the matched-baseline rule (principle 3) that every later stage depends on. Homogeneous hardware is a correctness requirement for that metric. A40 has the most `preempt` nodes (13, ~26 GPUs, comfortably over the `%20` throttle) and is sm_86. If a class starves, **switch to another single class rather than widening** — and note that switching mid-sweep breaks comparability against rows already recorded.
+
+Accounting: this user's associations are `coehpc` and `eecs`; `preempt`/`share` accept any account, so no `--account` line is needed. `MaxArraySize` is 1001 and `MaxJobCount` 5000, so 75 tasks is unremarkable.
+
+**Home is 25 GB** (`/nfs/stak/users`), which a torch venv fits but does not swim in. `/scratch` is 347 GB but node-local (`/dev/sda2`), so it cannot hold a venv shared across array tasks. This is also what rules out the container route in practice: `apptainer` 1.5.1 is installed but there is no `/etc/subuid` entry, so images can only be pulled, not built — and a ~20 GB NGC image against a 25 GB quota is not viable. The venv path is the right one here, not merely the incumbent.
 
 `scripts/slurm/check_os_compat.sh` owns this rule so it exists once rather than in both callers, and encodes the direction — an EL8-built venv is explicitly *not* blocked on EL9 nodes. Getting that backwards is expensive both ways: too strict silently refuses nodes the venv would have run on, too loose lets tasks die in the loader. Nine cases in `test_module_resolution.sh` pin it, including dotted minors: a naive digit-strip turns `rocky8.10` into `810`, which compares as *newer* than `rocky9` and waves through a venv that cannot run. The residual risk on the EL8→EL9 path is not glibc but the per-generation module tree, which surfaces as a legible module-load warning rather than a loader error.
 

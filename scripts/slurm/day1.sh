@@ -100,29 +100,32 @@ WANT_GEN="$(printf '%s' "$CONSTRAINT" | sed -n 's/^[^0-9]*\([0-9][0-9]*\).*/\1/p
 LOGIN_GEN="$(printf '%s' "$LOGIN_OS" | sed -n 's/^[^0-9]*\([0-9][0-9]*\).*/\1/p')"
 echo "    login node: $LOGIN_OS   target constraint: ${CONSTRAINT:-none}"
 
-if [ -n "$WANT_GEN" ] && [ -n "$LOGIN_GEN" ] && [ "$WANT_GEN" != "$LOGIN_GEN" ] \
+# Only the NEWER-built-than-target direction is fatal; glibc is backward
+# compatible, so building on EL8 and running on EL9 is fine and is in fact the
+# best configuration on this cluster (the login nodes are EL8, and the EL8 GPU
+# nodes are ancient M60/GTX980 hardware that modern Triton cannot use anyway).
+if [ -n "$WANT_GEN" ] && [ -n "$LOGIN_GEN" ] && [ "$LOGIN_GEN" -gt "$WANT_GEN" ] \
    && [ "$BUILD_IN_ALLOC" -eq 0 ]; then
     cat >&2 <<EOF
 
-This login node is $LOGIN_OS but you asked for --constraint=$CONSTRAINT. A venv
-built here carries EL${LOGIN_GEN}'s glibc, and building it on the wrong generation is
-not fixable afterwards -- it has to be rebuilt. Three options:
+This login node is $LOGIN_OS but you asked for --constraint=$CONSTRAINT. A venv built
+here carries EL${LOGIN_GEN}'s glibc, which cannot run on an EL${WANT_GEN} node -- and where it is
+built is not fixable afterwards, only rebuildable. Three options:
 
-  1. Log in to an EL${WANT_GEN} submit host and re-run this script. Preferred: pip needs
-     outbound network, which login nodes reliably have and compute nodes may not.
+  1. Log in to an EL${WANT_GEN} submit host and re-run. Preferred: pip needs outbound
+     network, which login nodes reliably have and compute nodes may not.
 
   2. Build inside an allocation on an EL${WANT_GEN} node:
          bash scripts/slurm/day1.sh --constraint $CONSTRAINT --build-in-alloc
-     This srun's the install step. It fails if compute nodes lack outbound
-     network, which is the reason it is not the default.
 
-  3. Build here on EL${LOGIN_GEN} and run everywhere -- glibc is backward compatible,
-     so an EL${LOGIN_GEN} venv is valid on EL9 nodes too:
+  3. Target EL${LOGIN_GEN} instead:
          bash scripts/slurm/day1.sh --constraint el${LOGIN_GEN}
-     Costs toolchain currency: EL8's glibc 2.28 is exactly the floor for PyPI
-     torch's manylinux_2_28 wheels, with no headroom.
 EOF
     die "OS generation mismatch; pick one of the three above"
+fi
+
+if [ -n "$WANT_GEN" ] && [ -n "$LOGIN_GEN" ] && [ "$LOGIN_GEN" -lt "$WANT_GEN" ]; then
+    ok "building on EL$LOGIN_GEN for EL$WANT_GEN nodes -- fine, glibc is backward compatible"
 fi
 
 if [ "$BUILD_IN_ALLOC" -eq 1 ]; then

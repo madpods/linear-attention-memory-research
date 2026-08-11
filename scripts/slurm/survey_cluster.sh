@@ -43,8 +43,10 @@ section "node features -- for --constraint (OS generation lives here)"
 # constraining to el9 on a partition whose GPU nodes are all el8 just pends
 # forever.
 if have sinfo; then
+    # %f needs room: the dgxh rows run to ~50 chars and a narrow field silently
+    # truncates the el8/el9 suffix off the end -- the one token being looked up.
     echo "--- per node (name, partition, features) ---"
-    sinfo -N -o "%20N %20P %40f" | sort -u
+    sinfo -N -o "%20N %20P %70f" | sort -u | sed 's/ *$//'
     echo
     echo "--- deduped feature list ---"
     sinfo -h -o "%f" | tr ',' '\n' | sed 's/^ *//; s/ *$//' | grep -v '^$' | sort -u

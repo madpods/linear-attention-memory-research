@@ -9,7 +9,7 @@
 # why. logs/.gitkeep is tracked so a fresh clone already has it; day1.sh also
 # creates it before submitting. If you hand-edit these paths, keep that true.
 #SBATCH --partition=preempt
-#SBATCH --constraint=el9
+#SBATCH --constraint=el9&a40
 #SBATCH --requeue
 #SBATCH --time=02:00:00
 #SBATCH --nodes=1
@@ -27,23 +27,37 @@
 # Submit:  sbatch scripts/slurm/sweep_array.sbatch
 #
 # --------------------------------------------------------------------------
-# OS generation: --constraint=el9
+# --constraint=el9&a40 -- both halves are load-bearing
 # --------------------------------------------------------------------------
-# The cluster mixes Rocky 8 and Rocky 9 and glibc is not forward compatible, so
-# the venv and the tasks must agree. EL9 is the default here even though EL8
-# holds more of the cluster overall, because node *share* is not the relevant
-# quantity -- only GPU nodes matter, the newer accelerators are the ones on EL9,
-# and EL8's glibc 2.28 is exactly the floor for PyPI torch's manylinux_2_28
-# wheels with no headroom as torch moves to manylinux_2_34.
+# el9: the cluster mixes Rocky 8 and Rocky 9 and glibc is not forward
+# compatible, so the venv and the tasks must agree. EL9 because the EL8 GPU
+# nodes are M60 and GTX980 hardware that modern Triton cannot use at all; the
+# useful accelerators are all EL9. Building the venv on an EL8 login node and
+# running here is fine and expected -- glibc is backward compatible, and
+# check_os_compat.sh permits exactly that direction while rejecting the reverse.
 #
-# This must match what setup_env.sh recorded in $VENV/build_os. Override on the
-# command line if you built on EL8 (that venv runs on both generations):
+# a40: this is NOT just about avoiding slow nodes. Two reasons:
 #
-#     sbatch --constraint=el8 scripts/slurm/sweep_array.sbatch
+#   1. preempt's EL9 GPU nodes span gtx1080 (sm_61) to h200 (sm_90), and Triton
+#      requires sm_70+. The four gtx1080 nodes (cn-e07..cn-e10) would fail
+#      outright, and --requeue could land a task back on one.
+#   2. tokens/sec is a Stage 2 deliverable. Measured across V100, A40 and H100
+#      it is not a comparable column, which defeats the fixed-baseline rule the
+#      whole experiment design rests on (plan principle 3). Homogeneous hardware
+#      is a correctness requirement for the metric, not a preference.
 #
-# check_os_compat.sh is the backstop and rejects only the direction that cannot
-# work (an EL9 build on an EL8 node), so a mismatch reports itself rather than
-# failing in the dynamic loader.
+# A40 has the most nodes on preempt (cn-r-1..6, cn-s-1..5, cn-t-1, sail-gpu0 =
+# 13 nodes, ~26 GPUs, comfortably above the %20 throttle) and is sm_86.
+#
+# To change class, keep it to ONE: l40s (4 nodes), v100 (dgx2-*, 4 nodes),
+# h100/h200 (dgxh, but see the partition note). If a class starves, switch
+# rather than widen -- and if you do switch mid-sweep, the tokens/sec column
+# stops being comparable across the rows already recorded.
+#
+#     sbatch --constraint=el9&l40s scripts/slurm/sweep_array.sbatch
+#
+# Accounting: this user's associations are coehpc and eecs, and preempt/share
+# accept any account, so no --account line is needed.
 #
 # --------------------------------------------------------------------------
 # Partition choice

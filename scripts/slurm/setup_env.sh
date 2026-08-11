@@ -94,13 +94,31 @@ load_modules() {
     # A host compiler, because Triton does not only emit PTX: it compiles a
     # small C launcher stub at runtime, with the system compiler. Rocky 8 ships
     # gcc 8.5, old enough to be a plausible source of a first-call failure that
-    # would look like a CUDA problem. The Lmod default here is gcc/12.5, which
-    # is also inside the host-compiler range both CUDA 12.x and 13.x accept.
-    # Set MODULE_GCC=none to skip, or to a specific version to pin.
+    # would look like a CUDA problem.
+    #
+    # But NOT simply the newest: nvcc rejects a host compiler newer than it
+    # knows about, and this cluster offers up to gcc/15.2 while CUDA 12.x tops
+    # out around gcc 13. pick_module's fallback is "highest version", which is
+    # right for python and wrong here -- and the fallback is what actually runs,
+    # because `module -t avail` on this cluster emits no (D) markers at all.
+    # So cap the major. GCC_MAX_MAJOR=12 is inside every CUDA 12.x/13.x range.
     if [ "${MODULE_GCC:-}" != "none" ]; then
-        load_one "${MODULE_GCC:-$(pick_module gcc || true)}"
+        load_one "${MODULE_GCC:-$(pick_capped_module gcc "${GCC_MAX_MAJOR:-12}" || true)}"
     fi
     return 0
+}
+
+# Highest <name>/<major>.<minor> whose major is <= $2. Used where "newest" is
+# actively wrong. Falls back to pick_module if nothing is under the cap, so a
+# cluster carrying only newer versions still gets something rather than nothing.
+pick_capped_module() {
+    local name="$1" cap="$2" avail best
+    avail="$(module -t avail "$name" 2>&1 | tr -d '\r' | grep -E "^$name/" | sed 's/(.*)//' || true)"
+    [ -n "$avail" ] || return 0
+    best="$(printf '%s\n' "$avail" \
+        | awk -F'[/.]' -v cap="$cap" '$2 <= cap' \
+        | sort -V | tail -1 || true)"
+    if [ -n "$best" ]; then printf '%s\n' "$best"; else pick_module "$name"; fi
 }
 
 # The CUDA module is chosen AFTER torch is installed, from what torch itself

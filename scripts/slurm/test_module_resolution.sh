@@ -118,6 +118,46 @@ MODULE_GCC=none run_case "MODULE_GCC=none skips gcc" \
     'python/3.13(D)
 gcc/12.5(D)' '' 'python/3.13'
 
+# The real thing: python and gcc exactly as `module -t avail` reports them on
+# submit-a (captured 2026-08-11). Note there are NO (D) markers -- terse output
+# on this cluster omits them entirely, even though the columnar `module avail`
+# shows them. So the (D) branch never fires here and the fallback is what runs.
+#
+# For python "highest version" is right: python/3.13, and sort -V must beat a
+# lexical sort that would pick 3.9 over 3.13.
+#
+# For gcc "highest version" is WRONG: gcc/15.2 is newer than any host compiler
+# CUDA 12.x/13.x accepts, so the cap has to bring it back to gcc/12.5. This
+# case is the reason pick_capped_module exists.
+run_case "real submit-a lists" \
+    'python/3.8
+python/3.9
+python/3.10
+python/3.11
+python/3.12
+python/3.13
+gcc/4.9.4
+gcc/5.5
+gcc/8.5
+gcc/9.5
+gcc/10.5
+gcc/11.5
+gcc/12.2
+gcc/12.4
+gcc/12.5
+gcc/13.4
+gcc/14.3
+gcc/15.1
+gcc/15.2' '' 'python/3.13 gcc/12.5'
+
+# GCC_MAX_MAJOR is the knob if a future CUDA accepts more.
+GCC_MAX_MAJOR=14 run_case "GCC_MAX_MAJOR=14" \
+    'python/3.13
+gcc/12.5
+gcc/13.4
+gcc/14.3
+gcc/15.2' '' 'python/3.13 gcc/14.3'
+
 # --- load_cuda_module -------------------------------------------------------
 #
 # The cluster carries CUDA 11.x through 13.x, so Lmod's (D) default is not
