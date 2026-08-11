@@ -71,6 +71,25 @@ PRESETS = {
         steps=1500,
         steps_list=(1500, 3000, 6000, 12000),
     ),
+    # ANSWERED, and the answer was "training budget". capacity@95% moved
+    # 16 -> 16 -> 32 -> 32 over those four step counts and had not stopped;
+    # kv=64 reached 91% at 12000 steps, just under the threshold. This preset
+    # pushes until it stops moving, which is the precondition for fixing the
+    # budget honestly. kv=96 is included because 64 is no longer the top of the
+    # curve -- seq_len=256 admits up to 124 pairs (2*124 + 8 queries).
+    #
+    #   PARTS=results/parts_converge sbatch --array=0-17%14 \
+    #       --export=ALL,PRESET=converge,SEED=0,PARTS=results/parts_converge,MODES="delta gated_delta" \
+    #       scripts/slurm/sweep_array.sbatch
+    #
+    # ~18 min per 24000-step run, ~36 min at 48000. Raise --time if the array
+    # starts hitting the 4h wall at the larger kv.
+    "converge": dict(
+        kv_pairs=(32, 64, 96),
+        redundancies=(0.0,),
+        steps=24000,
+        steps_list=(24000, 48000),
+    ),
 }
 
 # Fixed across every run in every stage. Changing these invalidates comparison

@@ -200,9 +200,15 @@ nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 
 # --only-index runs exactly one grid point. Safe to re-run: completed rows are
 # skipped, which is what makes --requeue harmless.
+# MODES trims the grid, e.g. MODES="delta gated_delta" to drop the linear floor
+# on an expensive preset. Unquoted on purpose: it is a word list, and the array
+# size must be computed with the same value --
+#     python scripts/stage2_sweep.py --preset converge --modes $MODES --count
+# shellcheck disable=SC2086
 srun python scripts/stage2_sweep.py \
     --preset "$PRESET" \
     --backend fla \
     --seed "$SEED" \
+    ${MODES:+--modes $MODES} \
     --only-index "$IDX" \
     --out "$OUT"

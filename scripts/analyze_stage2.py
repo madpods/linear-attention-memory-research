@@ -42,6 +42,21 @@ def fmt_pct(x: float | None) -> str:
     return "     -" if x is None else f"{100 * x:5.1f}%"
 
 
+def _as_float(value: str | None) -> float | None:
+    """Parse a cell, or None if it is blank or not a number."""
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
+def _mean_of(rows: list[dict], key: str) -> float | None:
+    values = [v for v in (_as_float(r.get(key)) for r in rows) if v is not None]
+    return sum(values) / len(values) if values else None
+
+
 def effective_capacity(points: dict[int, float]) -> str:
     """Largest kv still at >= threshold, with a note if the curve never drops.
 
@@ -224,13 +239,29 @@ def main() -> None:
                       f"{100 * (a - b):>+7.1f}")
 
     print("\nThroughput")
-    print(f"{'mode':<13} {'tok/s':>10} {'sec/run':>9} {'params':>10}")
-    print("-" * 45)
+    print(f"{'mode':<13} {'tok/s':>10} {'sec/run':>9} {'params':>10} {'n':>5}")
+    print("-" * 51)
     for mode in by_mode(rows):
         sel = [r for r in rows if r["mode"] == mode]
-        tps = sum(float(r["tokens_per_sec"]) for r in sel) / len(sel)
-        sec = sum(float(r["wall_clock_sec"]) for r in sel) / len(sel)
-        print(f"{mode:<13} {tps:>10,.0f} {sec:>9.0f} {int(sel[0]['num_parameters']):>10,}")
+        # Skip unparseable cells rather than dying. Timing columns can be blank
+        # or misaligned in older data (see the _append_csv note in train.py);
+        # losing a throughput average is not a reason to lose the accuracy
+        # tables, which sit earlier in the row and are unaffected.
+        tps = _mean_of(sel, "tokens_per_sec")
+        sec = _mean_of(sel, "wall_clock_sec")
+        params = _mean_of(sel, "num_parameters")
+        n = sum(1 for r in sel if _as_float(r.get("tokens_per_sec")) is not None)
+        cells = (
+            f"{tps:>10,.0f}" if tps is not None else f"{'-':>10}",
+            f"{sec:>9.0f}" if sec is not None else f"{'-':>9}",
+            f"{params:>10,.0f}" if params is not None else f"{'-':>10}",
+        )
+        print(f"{mode:<13} {' '.join(cells)} {n:>5}")
+    if any(_as_float(r.get("tokens_per_sec")) is None for r in rows):
+        bad = sum(1 for r in rows if _as_float(r.get("tokens_per_sec")) is None)
+        print(f"  note: {bad} of {len(rows)} rows have no usable timing column.")
+        print("  Accuracy is unaffected (it precedes the timing columns in the")
+        print("  row), but re-run those configs for trustworthy throughput.")
 
     if args.csv:
         fields = ["mode", "redundancy_r", "num_kv_pairs", "final_accuracy",

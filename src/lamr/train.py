@@ -243,16 +243,57 @@ def train(cfg: TrainConfig, verbose: bool = True) -> dict[str, Any]:
     return result
 
 
+def _existing_header(path: Path) -> list[str]:
+    """Column names already in ``path``, or ``[]`` if it has none."""
+    if not path.exists() or path.stat().st_size == 0:
+        return []
+    with path.open(newline="", encoding="utf-8") as fh:
+        return next(csv.reader(fh), [])
+
+
 def _append_csv(path: Path, result: dict[str, Any]) -> None:
-    """Append one row; ``history`` is JSON-encoded so the row stays flat."""
+    """Append one row; ``history`` is JSON-encoded so the row stays flat.
+
+    The row is written against the file's OWN header, not against its own key
+    order. Those differ: :func:`evaluate` reports a metric only when its
+    denominator is non-zero, so an ``r=0`` run has no ``final_accuracy_redundant``
+    while an ``r>0`` run does. Building the writer from the incoming row instead
+    wrote a 34-value row into a 36-column file, shifting every column after
+    ``final_accuracy`` by one -- silently, since CSV has no way to complain.
+
+    When the new row carries keys the file has never seen, the file is rewritten
+    with the union header rather than appended to, because there is no way to
+    place a new column in old rows otherwise.
+    """
     row = {k: (json.dumps(v) if k == "history" else v) for k, v in result.items()}
     path.parent.mkdir(parents=True, exist_ok=True)
-    write_header = not path.exists()
-    with path.open("a", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=list(row))
-        if write_header:
+
+    header = _existing_header(path)
+    if not header:
+        with path.open("a", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=list(row))
             writer.writeheader()
+            writer.writerow(row)
+        return
+
+    new_keys = [k for k in row if k not in header]
+    if not new_keys:
+        # Common case: the file's header already covers this row. restval fills
+        # any column this row does not have, keeping the alignment exact.
+        with path.open("a", newline="", encoding="utf-8") as fh:
+            csv.DictWriter(fh, fieldnames=header, restval="").writerow(row)
+        return
+
+    with path.open(newline="", encoding="utf-8") as fh:
+        old_rows = list(csv.DictReader(fh))
+    fieldnames = header + new_keys
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fieldnames, restval="")
+        writer.writeheader()
+        writer.writerows(old_rows)
         writer.writerow(row)
+    tmp.replace(path)
 
 
 def _cli() -> TrainConfig:

@@ -16,7 +16,28 @@ Stages 0–2 are complete. The full 75-config grid ran on the cluster (A40, `bac
 
 **4. The redundant/non-redundant gap is partly an artifact, and must not be read as retrieval.** Redundant queries beat non-redundant by +11 to +62 points, widening with `r`. But `linear` — which cannot retrieve at all — scores **34.8% on redundant queries at `r=0.9`** against 0.0% on non-redundant. So much of redundant-query accuracy is reachable by learning the shared-value prior over `num_value_clusters=8` representatives, no retrieval involved. The honest measure is the margin over `linear` at the same `r` (at `r=0.9`: 69.7 `gated_delta` vs 34.8 `linear` — real retrieval is happening). Never the raw redundant accuracy, and never the redundant-minus-non-redundant gap alone. **Stage 4's dedup mechanism is evaluated on exactly these queries, so this confound is a trap directly in its path — it would flatter the mechanism.**
 
-**Open question that outranks Stage 3: is the cliff a capacity limit or a training-budget limit?** Bimodality at kv=32 is what an under-trained run looks like. If more steps collapse the spread upward, then 1500 steps was the binding constraint and "effective capacity" has been measuring the optimizer rather than the state matrix — which would move every reference curve and change what Stages 3–6 are compared against. The `cliff` preset in `stage2_sweep.py` tests it (steps ∈ {1500, 3000, 6000, 12000} × kv ∈ {16, 32, 64}), ~11 min of wall clock. Settle this before building a mechanism to raise a ceiling that may not be the ceiling.
+## The 1500-step reference grid is INVALID — it measures optimization speed, not capacity
+
+Settled by the `cliff` preset (steps × kv, 4 seeds, `r=0`). This supersedes findings 1–3 above wherever they rest on absolute numbers; only finding 4 (the redundant-query confound) is budget-independent.
+
+| steps | `delta` kv=16 | kv=32 | kv=64 | `capacity@95%` | kv=32 spread |
+|---|---|---|---|---|---|
+| 1,500 | 96.1% | 62.2% | 2.7% | 16 | **47.4** |
+| 3,000 | 99.2% | 92.2% | 57.7% | 16 | 4.4 |
+| 6,000 | 99.7% | 97.0% | 87.1% | **32** | 2.2 |
+| 12,000 | 99.9% | 98.8% | 91.0% | **32** | 0.6 |
+
+Three conclusions, all firm:
+
+1. **The bimodality was undertraining, entirely.** The kv=32 spread collapses 47.4 → 4.4 → 2.2 → 0.6 as the budget grows. Nothing about the state matrix was bimodal; the optimizer had not finished.
+2. **`capacity@95%` at 1500 steps understates the ceiling by at least 2×, and had not stopped rising at 12,000** — kv=64 sits at 91%, just under threshold. So the published-looking `16, 16, 8, 8, <4` collapse-with-redundancy curve is *not* a capacity result. It may be entirely a statement about how many steps each redundancy level needs.
+3. **Even the floor was undertrained.** `linear` at kv=16 goes 10.0% → 93.2%. The clean "error-corrected writes buy capacity, linear attention fails" ordering that Stage 2 was built to reproduce is, at this budget, substantially a *convergence-speed* difference rather than a capacity difference. That is worth stating plainly because the whole project is premised on a capacity story.
+
+What survives and is now *stronger*: **`delta` and `gated_delta` are indistinguishable.** At 12,000 steps they are 98.8 vs 98.6 (kv=32) and 91.0 vs 90.8 (kv=64), with spreads ≤3.4. The negative result holds at every budget tested.
+
+**Do not run Stage 3 or 4 against the 1500-step curves.** The budget has to be re-fixed at a converged value first, and the reference grid regenerated — otherwise a mechanism that merely speeds up convergence will read as one that raises capacity, which is the exact confusion the whole design is meant to avoid.
+
+**A structural problem surfaces with it: the metric is close to saturating.** `seq_len=256` admits at most 124 kv pairs (`2·124 + 8 queries`), and `delta` is already at 91% on kv=64. If the converged capacity lands at 64 or above, `capacity@95%` has under 2× of headroom left, so a mechanism that doubles capacity could not be measured at all. The `converge` preset (kv ∈ {32, 64, 96} × steps ∈ {24000, 48000}) finds where capacity stops moving; the architecture then has to be re-fixed so the ceiling sits well inside the measurable kv range. Lowering `d_model` (64 → 32, so `d_k` 16 → 8 per head) is the cheaper lever than raising `seq_len`, since it reduces the ceiling *and* per-run cost, but it is a deliberate re-fix of the frozen config in plan principle 3 and invalidates every curve recorded so far.
 
 - `src/lamr/data/mqar.py` — redundancy-parameterized MQAR generator (Stage 1).
 - `src/lamr/layers/recurrent.py` — sequential reference update rules; correctness ground truth.
