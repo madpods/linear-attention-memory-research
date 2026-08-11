@@ -1,0 +1,18 @@
+# Environments (rebuilt per machine; the HPC one is built by setup_env.sh)
+.venv/
+.venv-gpu/
+*.egg-info/
+__pycache__/
+*.py[cod]
+
+# Experiment outputs. Results are reproducible from configs + seeds, and the
+# per-task CSVs from a 75-job array would otherwise churn the history.
+results/
+logs/
+cluster_survey.txt
+wandb/
+
+# Tooling
+.pytest_cache/
+.ipynb_checkpoints/
+.DS_Store

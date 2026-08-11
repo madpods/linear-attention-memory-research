@@ -1,0 +1,8 @@
+# Normalize text files in the repository to LF.
+* text=auto
+
+# Scripts that run on the Linux cluster MUST keep LF endings even when checked
+# out on Windows. A CRLF shebang line fails on Linux with the unhelpful
+# "/usr/bin/env bash^M: bad interpreter" / "\r: command not found".
+*.sh   text eol=lf
+*.sbatch text eol=lf

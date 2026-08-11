@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lamr"
+version = "0.0.1"
+description = "Linear Attention Memory Research - staged testbed for state-matrix capacity mechanisms"
+requires-python = ">=3.10"
+dependencies = [
+    "torch",
+    "einops",
+    "numpy",
+]
+
+[project.optional-dependencies]
+# Chunk-parallel Triton kernels. Requires an NVIDIA CUDA GPU; not installable
+# on this workstation (AMD RDNA1). Install on the HPC box only.
+gpu = [
+    "flash-linear-attention",
+    "triton",
+]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
