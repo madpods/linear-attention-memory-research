@@ -47,6 +47,9 @@ class TrainConfig:
     chunk_size: int = 64
     backend: str = "chunked"
     use_short_conv: bool = True
+    # "auto" -> cuda when present, else cpu. Explicit "cpu" forces the host even
+    # on a GPU node, which is what reproduces the Stage 2 CPU baselines.
+    device: str = "auto"
 
     # --- optimization ---
     steps: int = 2000
@@ -127,13 +130,37 @@ def evaluate(model, batch: MQARBatch, batch_size: int = 64) -> dict[str, float]:
     return {k: totals[k] / counts[k] for k in totals}
 
 
+def resolve_device(spec: str) -> torch.device:
+    """``"auto"`` -> cuda when available, else cpu. Anything else is taken as-is.
+
+    The ``fla`` backend is CUDA-only: its Triton kernels cannot run on host
+    tensors, and ``fla_available()`` tests only that a CUDA *device exists*, not
+    that the tensors are on it. So a CPU-resident model with ``backend="fla"``
+    passes that check and then fails inside the kernel -- which is why this
+    raises instead, naming the actual problem.
+    """
+    device = torch.device(
+        ("cuda" if torch.cuda.is_available() else "cpu") if spec == "auto" else spec
+    )
+    return device
+
+
 def train(cfg: TrainConfig, verbose: bool = True) -> dict[str, Any]:
     torch.manual_seed(cfg.seed)
+    device = resolve_device(cfg.device)
+    if cfg.backend == "fla" and device.type != "cuda":
+        raise RuntimeError(
+            f"backend='fla' needs CUDA tensors but device resolved to {device}. "
+            "fla's Triton kernels cannot run on the host. Either run on a GPU "
+            "node (device='auto' finds it) or use backend='chunked'."
+        )
 
-    train_data = _make_data(cfg, cfg.num_train, cfg.data_seed)
-    eval_data = _make_data(cfg, cfg.num_eval, cfg.data_seed + 10_000)
+    # Data is generated on the host and moved once, up front: these are small
+    # fixed corpora, not streamed, so per-step transfers would be pure overhead.
+    train_data = _make_data(cfg, cfg.num_train, cfg.data_seed).to(device)
+    eval_data = _make_data(cfg, cfg.num_eval, cfg.data_seed + 10_000).to(device)
 
-    model = LinearAttentionLM(cfg.model_config())
+    model = LinearAttentionLM(cfg.model_config()).to(device)
     opt = torch.optim.AdamW(
         model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay, betas=(0.9, 0.95)
     )
@@ -142,7 +169,8 @@ def train(cfg: TrainConfig, verbose: bool = True) -> dict[str, Any]:
     if verbose:
         print(
             f"mode={cfg.mode} r={cfg.redundancy_r} kv={cfg.num_kv_pairs} "
-            f"params={n_params:,} steps={cfg.steps}"
+            f"params={n_params:,} steps={cfg.steps} device={device} "
+            f"backend={cfg.backend}"
         )
 
     generator = torch.Generator().manual_seed(cfg.seed)
@@ -153,7 +181,13 @@ def train(cfg: TrainConfig, verbose: bool = True) -> dict[str, Any]:
         for group in opt.param_groups:
             group["lr"] = _lr_at(step, cfg)
 
+        # Generator stays on the HOST deliberately, then the indices are moved.
+        # A CUDA generator would draw a different sequence for the same seed, so
+        # GPU runs would see a different batch order than the recorded CPU
+        # baselines -- and the r=0 rows are supposed to be a controlled
+        # comparison against those.
         idx = torch.randint(0, len(train_data), (cfg.batch_size,), generator=generator)
+        idx = idx.to(device)
         logits = model(train_data.input_ids[idx])
         # No next-token shift: position p carries the answer to the query at p.
         loss = F.cross_entropy(
@@ -183,6 +217,12 @@ def train(cfg: TrainConfig, verbose: bool = True) -> dict[str, Any]:
                 )
 
     final = evaluate(model, eval_data)
+    # CUDA launches are asynchronous, so the host clock would otherwise stop
+    # while kernels are still running and report a tokens_per_sec that is simply
+    # wrong. That column is a Stage 2 deliverable, so synchronize before reading
+    # the clock. No-op on CPU.
+    if device.type == "cuda":
+        torch.cuda.synchronize()
     elapsed = time.perf_counter() - started
     result = {
         **cfg.as_dict(),

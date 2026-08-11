@@ -306,6 +306,17 @@ PY
     echo "    src/lamr/layers/fla_backend.py, never the test."
     python -m pytest tests/test_fla_parity.py -q -rs
 
+    # The parity gate covers the kernels' FORWARD pass only. It never builds a
+    # model, never calls backward through fla's autograd, and never moves a
+    # batch to the device -- so it cannot catch the failure that would otherwise
+    # hit all 75 array tasks. One short real training run does, in ~30 seconds.
+    echo "==> end-to-end training smoke test (backend=fla, backward pass)"
+    python -m lamr.train --mode gated_delta --backend fla --steps 20 \
+        --num-train 512 --num-eval 256 --seq-len 128 --num-kv-pairs 4 \
+        --num-queries 4 --d-model 64 --eval-every 0 --log-every 0
+    echo "    (accuracy is meaningless at 20 steps -- this checks that the loop"
+    echo "     runs on device at all, not that it learns anything)"
+
     echo
     echo "==> done. Submit the sweep with:"
     echo "    python scripts/stage2_sweep.py --preset full --count   # expect 75"

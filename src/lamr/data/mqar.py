@@ -35,7 +35,7 @@ answer. Disjoint bands cost nothing and remove the ambiguity.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from typing import Any
 
 import numpy as np
@@ -165,6 +165,27 @@ class MQARBatch:
 
     def __len__(self) -> int:
         return int(self.input_ids.shape[0])
+
+    def to(self, device: torch.device | str) -> MQARBatch:
+        """Move every tensor field to ``device``, leaving ``config`` alone.
+
+        All of these travel together on purpose: :func:`lamr.metrics.recall_metrics`
+        gathers ``query_positions`` / ``labels`` / ``query_kv_index`` /
+        ``is_redundant`` / ``is_shared`` against the model's logits, so moving
+        only ``input_ids`` would leave the metrics indexing across devices.
+
+        Generated over the dataclass fields rather than named individually, so a
+        field added later is not silently left behind on the host.
+        """
+        moved = {
+            f.name: (
+                value.to(device)
+                if isinstance(value := getattr(self, f.name), torch.Tensor)
+                else value
+            )
+            for f in fields(self)
+        }
+        return MQARBatch(**moved)
 
 
 def _validate(

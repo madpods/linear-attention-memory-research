@@ -254,6 +254,36 @@ def test_shapes_and_dtypes():
     assert batch.is_redundant.dtype == torch.bool
 
 
+def test_to_moves_every_tensor_field():
+    """``.to()`` must not leave a field behind on the host.
+
+    ``recall_metrics`` gathers ``query_positions`` / ``labels`` /
+    ``query_kv_index`` / ``is_redundant`` / ``is_shared`` against the model's
+    logits, so a field left un-moved is a cross-device index at eval time, on the
+    GPU only -- invisible to this CPU-only suite unless the walk is checked
+    structurally. Hence comparing field sets rather than naming tensors.
+    """
+    from dataclasses import fields
+
+    batch = make(redundancy_r=0.5)
+    moved = batch.to("cpu")
+
+    tensor_fields = {
+        f.name for f in fields(batch) if isinstance(getattr(batch, f.name), torch.Tensor)
+    }
+    assert tensor_fields, "expected some tensor fields"
+    for name in tensor_fields:
+        got = getattr(moved, name)
+        assert isinstance(got, torch.Tensor), f"{name} stopped being a tensor"
+        assert got.device.type == "cpu"
+        assert torch.equal(got, getattr(batch, name)), f"{name} changed value"
+
+    # Non-tensor fields pass through untouched rather than being dropped.
+    assert moved.config == batch.config
+    assert {f.name for f in fields(moved)} == {f.name for f in fields(batch)}
+    assert len(moved) == len(batch)
+
+
 def test_query_kv_index_joins_queries_to_redundancy_flags():
     batch = make(redundancy_r=0.5)
     per_query_redundant = torch.gather(
