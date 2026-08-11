@@ -11,6 +11,7 @@ results/
 logs/
 cluster_survey.txt
 wandb/
+setup.log
 
 # Tooling
 .pytest_cache/
@@ -19,3 +20,9 @@ wandb/
 
 # ...but keep the Stage 2 reference summary: later stages cite it.
 !results/stage2_summary.csv
+
+# ...and keep logs/ itself in a fresh clone. Slurm opens the array's --output
+# files before the job script runs, so the directory has to exist at submit time
+# or all 75 tasks fail instantly with nothing written to explain it.
+!logs/
+!logs/.gitkeep

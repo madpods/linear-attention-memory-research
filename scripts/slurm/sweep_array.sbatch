@@ -2,6 +2,12 @@
 #SBATCH --job-name=lamr-stage2
 #SBATCH --output=logs/%x-%A_%a.out
 #SBATCH --error=logs/%x-%A_%a.err
+#
+# NOTE: logs/ must exist BEFORE submitting. Slurm opens these files itself when
+# the task launches, and the `mkdir -p logs` further down runs too late to help
+# -- a missing directory fails every task instantly with no output to explain
+# why. logs/.gitkeep is tracked so a fresh clone already has it; day1.sh also
+# creates it before submitting. If you hand-edit these paths, keep that true.
 #SBATCH --partition=preempt
 #SBATCH --requeue
 #SBATCH --time=02:00:00
@@ -61,11 +67,20 @@ command -v srun >/dev/null 2>&1 || module load slurm
 # docs are explicit that build-time modules must also be present at run time;
 # Triton compiles kernels against the CUDA toolkit on first call, so skipping
 # this fails deep inside fla rather than at import.
-if [ -f "$VENV/modules.env" ]; then
+if [ -s "$VENV/modules.env" ]; then
     while read -r m; do
-        [ -n "$m" ] && module load "$m"
+        [ -n "$m" ] || continue
+        module load "$m" || echo "WARN: could not load $m"
     done < "$VENV/modules.env"
     echo "modules: $(module -t list 2>&1 | tr '\n' ' ')"
+elif [ -f "$VENV/modules.env" ]; then
+    # Present but empty. Distinguished from missing on purpose: an empty record
+    # means setup_env.sh loaded nothing, so CUDA is whatever the bare PATH
+    # provides. Triton compiles against the toolkit on first call, so this is
+    # the point to notice it -- not 40 minutes into a 75-task array.
+    echo "WARN: $VENV/modules.env is empty -- no modules will be loaded."
+    echo "      If fla fails to compile kernels, re-run setup_env.sh with"
+    echo "      MODULE_PYTHON / MODULE_CUDA set explicitly."
 else
     echo "WARN: $VENV/modules.env missing -- run scripts/slurm/setup_env.sh first"
 fi

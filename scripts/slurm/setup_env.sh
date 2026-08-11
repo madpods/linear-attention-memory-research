@@ -28,31 +28,52 @@ case "${1:-}" in
     *) echo "usage: $0 [--install|--verify]" >&2; exit 2 ;;
 esac
 
+# Every non-zero status in here is deliberately swallowed. This function runs
+# under `set -e`, and module systems return failure for ordinary things (a
+# `module -t avail` for a name the cluster does not carry, a `grep` that finds
+# no (D) marker). An unguarded one aborts the script with no message at all --
+# which is exactly what it did before, on the happy path.
+REPLAYED_MODULES=0
+LOADED=()
+
 load_modules() {
     command -v srun >/dev/null 2>&1 || module load slurm 2>/dev/null || true
     if [ -f "$VENV/modules.env" ]; then
-        while read -r m; do [ -n "$m" ] && module load "$m"; done < "$VENV/modules.env"
-        return
+        # Replaying a previous run's choices. Do NOT re-derive them, and do not
+        # let the install phase overwrite the record with what it did not pick.
+        while read -r m; do
+            [ -n "$m" ] || continue
+            echo "    loading $m (recorded)"
+            module load "$m" || echo "    WARN: could not load recorded module $m"
+        done < "$VENV/modules.env"
+        REPLAYED_MODULES=1
+        return 0
     fi
     # Lmod marks its default with (D), which is what a bare `module load python`
     # picks. Prefer that; fall back to the highest version.
     pick_module() {
         local avail default
         avail="$(module -t avail "$1" 2>&1 | tr -d '\r' | grep -E "^$1/" || true)"
-        default="$(printf '%s\n' "$avail" | grep -F '(D)' | head -1 | sed 's/(.*)//')"
+        [ -n "$avail" ] || return 0
+        default="$(printf '%s\n' "$avail" | grep -F '(D)' | head -1 | sed 's/(.*)//' || true)"
         if [ -n "$default" ]; then printf '%s\n' "$default"
         else printf '%s\n' "$avail" | sed 's/(.*)//' | sort -V | tail -1; fi
     }
-    MODULE_PYTHON="${MODULE_PYTHON:-$(pick_module python)}"
-    MODULE_CUDA="${MODULE_CUDA:-$(pick_module cuda)}"
-    LOADED=()
+    MODULE_PYTHON="${MODULE_PYTHON:-$(pick_module python || true)}"
+    MODULE_CUDA="${MODULE_CUDA:-$(pick_module cuda || true)}"
     for m in "$MODULE_PYTHON" "$MODULE_CUDA"; do
         if [ -n "$m" ]; then
             echo "    loading $m"
-            module load "$m" && LOADED+=("$m") || echo "    WARN: could not load $m"
+            if module load "$m"; then LOADED+=("$m")
+            else echo "    WARN: could not load $m"; fi
         fi
     done
-    [ ${#LOADED[@]} -eq 0 ] && echo "    WARN: no modules loaded; using PATH as-is"
+    if [ "${#LOADED[@]}" -eq 0 ]; then
+        echo "    WARN: no modules loaded; using PATH as-is"
+        echo "    If python/cuda are module-provided here, set them explicitly:"
+        echo "        export MODULE_PYTHON=python/<ver> MODULE_CUDA=cuda/<ver>"
+    fi
+    return 0
 }
 
 # ---------------------------------------------------------------- install
@@ -77,8 +98,20 @@ PY
     source "$VENV/bin/activate"
     python -m pip install --upgrade pip
 
-    printf '%s\n' "${LOADED[@]:-}" > "$VENV/modules.env"
-    echo "    recorded modules -> $VENV/modules.env"
+    # Only write the record if this run actually chose the modules. On a repeat
+    # --install the venv already carries a modules.env, load_modules replayed it
+    # and LOADED is empty -- writing here would blank the file, and a blank
+    # modules.env makes sweep_array.sbatch load nothing while reporting nothing
+    # wrong. Triton would then fail deep inside fla on first kernel compile.
+    if [ "$REPLAYED_MODULES" -eq 1 ]; then
+        echo "    kept existing $VENV/modules.env ($(tr '\n' ' ' < "$VENV/modules.env"))"
+    elif [ "${#LOADED[@]}" -gt 0 ]; then
+        printf '%s\n' "${LOADED[@]}" > "$VENV/modules.env"
+        echo "    recorded modules -> $VENV/modules.env"
+    else
+        : > "$VENV/modules.env"
+        echo "    no modules to record; wrote empty $VENV/modules.env"
+    fi
 
     echo "==> torch (CUDA build)"
     pip install torch --index-url "${TORCH_INDEX:-https://download.pytorch.org/whl/cu124}"

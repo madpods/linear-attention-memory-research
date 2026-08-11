@@ -96,9 +96,15 @@ The array defaults to `preempt` with `--requeue`. These are short jobs and the s
 - **Scale** — `fla` defaults to `k.shape[-1] ** -0.5`; we pass `scale=1.0` because the layer L2-normalizes q/k itself.
 - **Decay** — the gated kernel takes `g`, log-space, positioned *before* `beta`. Passed by keyword so the order mismatch cannot bite.
 
+Re-verified against upstream `main` on 2026-08-11: both import paths resolve (`chunk_delta_rule`, `chunk_gated_delta_rule`), the parameter orders match, `scale=None` still means `k.shape[-1] ** -0.5`, `g` is still log-space while `use_gate_in_kernel` is False (the default), and the final state is still `[N, H, K, V]` — i.e. already `(d_k, d_v)`, so the adapter is right *not* to transpose it. What remains unverified is only numerical agreement. Note the gated kernel types `v`/`g`/`beta` against `HV` rather than `H`, which matters only if query and value head counts ever diverge; they don't here.
+
 `tests/test_fla_parity.py` is the gate. Run it before any training on the GPU — until it passes, no GPU number is comparable to any CPU number, and interchangeability is the premise the whole backend split rests on. Each assertion names the convention it pins. **Fix `fla_backend.py`; never relax the test.** Note the gate skips itself when `fla` is unimportable, so `setup_env.sh --verify` asserts `fla_available()` first; otherwise pytest would exit 0 with the gate never having run.
 
 Two operational notes: `sweep_array.sbatch` deliberately leaves `--partition` and `--account` unset (run `sinfo -o "%P %G %m %l"` first, as the plan's Stage 0 says). And each array task writes its own CSV — concurrent appends to one file interleave mid-row — which `merge_results.py` stitches back together, keeping the last row per configuration so a re-run task overrides its partial.
+
+**`logs/` must exist before `sbatch`.** Slurm opens the array's `--output`/`--error` files itself at task launch, so the `mkdir -p logs` inside the job script runs far too late — a missing directory fails all 75 tasks instantly with no output explaining why. `logs/.gitkeep` is tracked (with a `!logs/` negation in `.gitignore`) so a fresh clone already has it, and `day1.sh` re-creates it before submitting. Keep both true if those paths are ever edited.
+
+The module-resolution path in `setup_env.sh` is exercised by a stubbed-Lmod harness rather than trusted by inspection — it previously died silently on its own happy path, because a function whose last command is `[ test ] && echo` returns that test's status, and `set -e` kills the script when the test is false. Two more of the same class were in `pick_module` (a `grep` for `(D)` finding nothing, inside a `$(...)` assignment under `pipefail`). If you edit that function, re-run the harness; every one of these failures presents as an exit with no message at all. Related: re-running `--install` over an existing venv used to blank `$VENV/modules.env`, which is worse than deleting it — `sweep_array.sbatch` found the file, loaded nothing, reported nothing wrong, and left Triton to fail on first kernel compile. It now distinguishes missing / empty / populated.
 
 ## Project
 

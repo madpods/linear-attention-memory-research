@@ -78,16 +78,23 @@ if [ "$SETUP_RC" -ne 0 ]; then
     echo
     if grep -q "test_fla_parity" setup.log 2>/dev/null; then
         cat <<'EOF'
-The fla parity gate failed. This is the EXPECTED failure mode, not a surprise:
-src/lamr/layers/fla_backend.py was written without a CUDA device and encodes
-three unverified guesses. The failing assertion names which one is wrong:
+The fla parity gate failed. src/lamr/layers/fla_backend.py has never executed
+on a GPU, so this is a likely failure mode rather than a surprise. Its import
+names and signatures ARE verified against fla's source; what is unverified is
+numerical agreement. The failing assertion names the convention at fault:
 
   "output differs"  -> query scaling. We pass scale=1.0 because the layer
-                       L2-normalizes q/k; fla defaults to d_k ** -0.5.
-  "transposed state"-> fla returns (d_v, d_k). Transpose it INSIDE
-                       fla_backend.py; do not change the convention
-                       downstream, Stage 4 indexes that matrix by key.
-  "gated ... differs"-> decay parameterization; fla takes g = log(alpha).
+                       L2-normalizes q/k; fla defaults to d_k ** -0.5. If fla
+                       ever stops honouring scale=1.0, normalize in the kernel
+                       via use_qk_l2norm_in_kernel=True instead.
+  "transposed state"-> upstream documents [N, H, K, V], i.e. already (d_k, d_v),
+                       so the adapter deliberately does NOT transpose. Seeing
+                       this means upstream changed. Add the transpose INSIDE
+                       fla_backend.py -- do not change the convention
+                       downstream, Stage 4 indexes that matrix by key. Check
+                       state_v_first on the gated kernel first; it flips this.
+  "gated ... differs"-> decay parameterization. fla takes g = log(alpha) while
+                       use_gate_in_kernel is False (the default).
 
 Fix fla_backend.py, then re-run just the gate:
 EOF
@@ -125,14 +132,18 @@ ok "grid=$GRID matches array 0-$ARRAY"
 
 if [ "$SUBMIT" -eq 1 ]; then
     step "submitting"
+    # Slurm opens the array's --output/--error files itself at task launch, so
+    # logs/ must exist now; the mkdir inside the job script runs too late.
+    mkdir -p logs results/parts
     sbatch scripts/slurm/sweep_array.sbatch
     echo
     echo "Watch:   squeue -u \$USER"
     echo "Merge:   python scripts/merge_results.py results/parts results/stage2.csv"
 else
     step "ready -- not submitting (pass --submit to go ahead)"
+    mkdir -p logs results/parts
     cat <<EOF
-    Submit:  sbatch scripts/slurm/sweep_array.sbatch
+    Submit:  mkdir -p logs && sbatch scripts/slurm/sweep_array.sbatch
     Watch:   squeue -u \$USER
     Merge:   python scripts/merge_results.py results/parts results/stage2.csv
 
