@@ -261,6 +261,10 @@ run_os_case "el9 venv on el9"   rocky9  rocky9  0
 run_os_case "unknown build"     unknown rocky8  0
 run_os_case "unknown run"       rocky8  unknown 0
 run_os_case "empty build"       ''      rocky8  0
+# A dotted minor must not be read as one long number: "rocky8.10" -> 810 would
+# compare as NEWER than rocky9 and wave through a venv that cannot run.
+run_os_case "dotted minor, 8.10 on 9"  rocky8.10 rocky9    0
+run_os_case "dotted minor, 9.4 on 8.10" rocky9.4 rocky8.10 1
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

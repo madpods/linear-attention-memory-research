@@ -9,6 +9,7 @@
 # why. logs/.gitkeep is tracked so a fresh clone already has it; day1.sh also
 # creates it before submitting. If you hand-edit these paths, keep that true.
 #SBATCH --partition=preempt
+#SBATCH --constraint=el9
 #SBATCH --requeue
 #SBATCH --time=02:00:00
 #SBATCH --nodes=1
@@ -24,6 +25,25 @@
 #     python scripts/stage2_sweep.py --preset full --count
 #
 # Submit:  sbatch scripts/slurm/sweep_array.sbatch
+#
+# --------------------------------------------------------------------------
+# OS generation: --constraint=el9
+# --------------------------------------------------------------------------
+# The cluster mixes Rocky 8 and Rocky 9 and glibc is not forward compatible, so
+# the venv and the tasks must agree. EL9 is the default here even though EL8
+# holds more of the cluster overall, because node *share* is not the relevant
+# quantity -- only GPU nodes matter, the newer accelerators are the ones on EL9,
+# and EL8's glibc 2.28 is exactly the floor for PyPI torch's manylinux_2_28
+# wheels with no headroom as torch moves to manylinux_2_34.
+#
+# This must match what setup_env.sh recorded in $VENV/build_os. Override on the
+# command line if you built on EL8 (that venv runs on both generations):
+#
+#     sbatch --constraint=el8 scripts/slurm/sweep_array.sbatch
+#
+# check_os_compat.sh is the backstop and rejects only the direction that cannot
+# work (an EL9 build on an EL8 node), so a mismatch reports itself rather than
+# failing in the dynamic loader.
 #
 # --------------------------------------------------------------------------
 # Partition choice

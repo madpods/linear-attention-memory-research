@@ -7,14 +7,21 @@
 #     bash scripts/slurm/day1.sh                 # set up and stop before submitting
 #     bash scripts/slurm/day1.sh --submit        # ... and submit the 75-job array
 #     bash scripts/slurm/day1.sh --partition dgx2
-#     bash scripts/slurm/day1.sh --constraint el8   # pin to one OS generation
+#     bash scripts/slurm/day1.sh --constraint el8   # build/run on EL8 instead
+#     bash scripts/slurm/day1.sh --build-in-alloc   # build on a compute node
 #
-# The cluster mixes Rocky 8 and Rocky 9, and glibc is backward but not forward
-# compatible. Building on an EL8 login node is therefore the better default: the
-# venv then runs on every node and needs no --constraint. An EL9-built venv must
-# be pinned with --constraint=el9, which costs ~60% of the nodes. Feature names
-# are el8 / el9; cluster_survey.txt lists what each node advertises under "node
-# features". scripts/slurm/check_os_compat.sh enforces the direction.
+# The cluster mixes Rocky 8 and Rocky 9. glibc is backward but not forward
+# compatible, so the venv's generation and the array's --constraint must agree;
+# check_os_compat.sh enforces the direction that actually breaks.
+#
+# EL9 is the default. Node share favours EL8, but that is not the relevant
+# quantity: only GPU nodes matter, the newer accelerators are on EL9, and EL8's
+# glibc 2.28 is exactly the floor for PyPI torch's manylinux_2_28 wheels with no
+# headroom as torch moves to manylinux_2_34. Feature names are el8 / el9.
+#
+# The venv's generation is fixed by where it is BUILT, and this script builds on
+# the login node -- so if that node is EL8, it stops and offers the three ways
+# out rather than producing a venv that cannot run where you asked.
 #
 # It surveys the cluster, builds the GPU environment, runs both test suites,
 # checks the array size, and prints the submit command. It deliberately does
@@ -25,7 +32,8 @@ set -uo pipefail
 PARTITION="${PARTITION:-dgxh}"
 VENV="${VENV:-.venv-gpu}"
 SETUP_TIME="${SETUP_TIME:-01:00:00}"
-CONSTRAINT="${CONSTRAINT:-}"
+CONSTRAINT="${CONSTRAINT:-el9}"
+BUILD_IN_ALLOC=0
 SUBMIT=0
 
 while [ $# -gt 0 ]; do
@@ -35,7 +43,8 @@ while [ $# -gt 0 ]; do
         --partition=*) PARTITION="${1#*=}" ;;
         --constraint) CONSTRAINT="$2"; shift ;;
         --constraint=*) CONSTRAINT="${1#*=}" ;;
-        -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
+        --build-in-alloc) BUILD_IN_ALLOC=1 ;;
+        -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
     shift
@@ -82,11 +91,54 @@ bash scripts/slurm/survey_cluster.sh > cluster_survey.txt 2>&1 \
 # Installing here rather than inside srun: compute nodes often have no outbound
 # network, and holding a GPU through a multi-GB torch download wastes the
 # allocation. Only the GPU-dependent checks are srun'd, below.
-step "installing on the login node (~10-20 min; no GPU held)"
-bash scripts/slurm/setup_env.sh --install 2>&1 | tee setup.log
+# The venv's OS generation is fixed by wherever it is built, and glibc is not
+# forward compatible, so building on the wrong generation is not recoverable
+# later -- it has to be rebuilt. Check before spending 10-20 minutes on it.
+LOGIN_OS="$( [ -r /etc/os-release ] && ( . /etc/os-release && printf '%s%s' "${ID:-unknown}" "${VERSION_ID%%.*}" ) || echo unknown )"
+# First digit run only; see the same note in check_os_compat.sh.
+WANT_GEN="$(printf '%s' "$CONSTRAINT" | sed -n 's/^[^0-9]*\([0-9][0-9]*\).*/\1/p')"
+LOGIN_GEN="$(printf '%s' "$LOGIN_OS" | sed -n 's/^[^0-9]*\([0-9][0-9]*\).*/\1/p')"
+echo "    login node: $LOGIN_OS   target constraint: ${CONSTRAINT:-none}"
+
+if [ -n "$WANT_GEN" ] && [ -n "$LOGIN_GEN" ] && [ "$WANT_GEN" != "$LOGIN_GEN" ] \
+   && [ "$BUILD_IN_ALLOC" -eq 0 ]; then
+    cat >&2 <<EOF
+
+This login node is $LOGIN_OS but you asked for --constraint=$CONSTRAINT. A venv
+built here carries EL${LOGIN_GEN}'s glibc, and building it on the wrong generation is
+not fixable afterwards -- it has to be rebuilt. Three options:
+
+  1. Log in to an EL${WANT_GEN} submit host and re-run this script. Preferred: pip needs
+     outbound network, which login nodes reliably have and compute nodes may not.
+
+  2. Build inside an allocation on an EL${WANT_GEN} node:
+         bash scripts/slurm/day1.sh --constraint $CONSTRAINT --build-in-alloc
+     This srun's the install step. It fails if compute nodes lack outbound
+     network, which is the reason it is not the default.
+
+  3. Build here on EL${LOGIN_GEN} and run everywhere -- glibc is backward compatible,
+     so an EL${LOGIN_GEN} venv is valid on EL9 nodes too:
+         bash scripts/slurm/day1.sh --constraint el${LOGIN_GEN}
+     Costs toolchain currency: EL8's glibc 2.28 is exactly the floor for PyPI
+     torch's manylinux_2_28 wheels, with no headroom.
+EOF
+    die "OS generation mismatch; pick one of the three above"
+fi
+
+if [ "$BUILD_IN_ALLOC" -eq 1 ]; then
+    step "installing inside an allocation on $CONSTRAINT (~10-20 min)"
+    warn "compute nodes may lack outbound network; if pip cannot reach PyPI,"
+    warn "use an EL${WANT_GEN} login node instead (option 1 above)"
+    srun --partition="$PARTITION" --time="$SETUP_TIME" --cpus-per-task=4 --mem=16G \
+         "${CONSTRAINT_ARGS[@]+"${CONSTRAINT_ARGS[@]}"}" \
+         bash scripts/slurm/setup_env.sh --install 2>&1 | tee setup.log
+else
+    step "installing on the login node (~10-20 min; no GPU held)"
+    bash scripts/slurm/setup_env.sh --install 2>&1 | tee setup.log
+fi
 INSTALL_RC=${PIPESTATUS[0]}
 [ "$INSTALL_RC" -eq 0 ] || die "install phase failed; see setup.log"
-ok "venv built, CPU test suite passed"
+ok "venv built on $(cat "$VENV/build_os" 2>/dev/null || echo '?'), CPU test suite passed"
 
 step "verifying on a GPU node ($PARTITION)"
 srun --partition="$PARTITION" --gres=gpu:1 --time="$SETUP_TIME" \

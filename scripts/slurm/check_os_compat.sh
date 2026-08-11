@@ -50,8 +50,11 @@ if [ "$BUILD_OS" = "$RUN_OS" ]; then
 fi
 
 # Trailing digits are the EL generation: rocky8 -> 8.
-build_major="$(printf '%s' "$BUILD_OS" | sed 's/[^0-9]*//g')"
-run_major="$(printf '%s' "$RUN_OS" | sed 's/[^0-9]*//g')"
+# First run of digits only. Stripping every non-digit instead would turn a
+# "rocky8.10" into 810 and invert the comparison -- os_generation() only ever
+# emits a major, but this is the one place where being wrong is silent.
+build_major="$(printf '%s' "$BUILD_OS" | sed -n 's/^[^0-9]*\([0-9][0-9]*\).*/\1/p')"
+run_major="$(printf '%s' "$RUN_OS" | sed -n 's/^[^0-9]*\([0-9][0-9]*\).*/\1/p')"
 
 if [ -z "$build_major" ] || [ -z "$run_major" ]; then
     echo "os: build=$BUILD_OS run=$RUN_OS -- unparseable generation, continuing"
