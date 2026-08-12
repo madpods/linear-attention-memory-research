@@ -292,3 +292,52 @@ def test_negative_control_wrong_layout_is_detectably_wrong():
         output_final_state=True,
     )
     assert_detectably_wrong(wrong.double(), want, "heads treated as timesteps")
+
+
+# --------------------------------------------------------------------------
+# Stage 3 widths
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("d_phi", [32, 64, 96, 128])
+def test_fla_accepts_the_stage3_feature_map_widths(d_phi):
+    """Stage 3 hands fla a key width of d_phi while v stays at d_v.
+
+    dpfp3 produces d_phi=96, which is NOT a power of two, and Triton kernels
+    routinely require power-of-two block dims. If fla rejects or mis-handles 96,
+    that has to surface here rather than a third of the way into a 308-run array.
+
+    Also pins d_phi > d_v, which the whole stage depends on: the state becomes
+    d_phi x d_v, so the key space widens while the value space does not.
+    """
+    d_v = 16
+    q, k, v, beta = make_inputs(d_k=d_phi, d_v=d_v)
+    want, want_state = delta_rule_recurrent(
+        q.double(), k.double(), v.double(), beta.double()
+    )
+    got, got_state = fla_delta_rule(q, k, v, beta)
+
+    assert got.shape == want.shape, f"d_phi={d_phi}: output shape changed"
+    assert got_state.shape[-2:] == (d_phi, d_v), (
+        f"d_phi={d_phi}: state is {tuple(got_state.shape[-2:])}, expected "
+        f"({d_phi}, {d_v}) -- the key axis must be the widened one"
+    )
+    err = relative_error(got.double(), want)
+    assert err < REL_TOL, (
+        f"d_phi={d_phi}: fla differs from the reference by {err:.2e}. "
+        f"{'96 is not a power of two -- suspect a block-size constraint. ' if d_phi == 96 else ''}"
+        "Stage 3 cannot use a width fla computes incorrectly."
+    )
+
+
+def test_fla_accepts_the_gated_kernel_at_a_stage3_width():
+    """Same check for the gated kernel, at the width Stage 3 is most likely to use."""
+    d_phi, d_v = 64, 16
+    q, k, v, beta = make_inputs(d_k=d_phi, d_v=d_v)
+    alpha = (torch.rand_like(beta) * 0.1 + 0.9).clamp(max=1.0)
+    want, _ = gated_delta_rule_recurrent(
+        q.double(), k.double(), v.double(), beta.double(), alpha.double()
+    )
+    got, _ = fla_gated_delta_rule(q, k, v, beta, alpha)
+    err = relative_error(got.double(), want)
+    assert err < REL_TOL, f"gated kernel at d_phi={d_phi} differs by {err:.2e}"

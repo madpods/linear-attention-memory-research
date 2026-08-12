@@ -82,7 +82,7 @@ import itertools
 from pathlib import Path
 
 from lamr.train import TrainConfig, train
-from stage2_sweep import FIXED, already_done  # noqa: E402  (sibling script)
+from stage2_sweep import FIXED  # noqa: E402  (sibling script, same directory)
 
 #: Feature maps to ablate. identity is the control at d_k=16.
 PHI_ARMS = ("identity", "elu", "relu", "dpfp1", "dpfp2", "dpfp3", "dpfp4")

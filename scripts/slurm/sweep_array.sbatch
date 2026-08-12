@@ -206,10 +206,21 @@ nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 # size must be computed with the same value --
 #     python scripts/stage2_sweep.py --preset converge --modes $MODES --count
 # shellcheck disable=SC2086
-srun python scripts/stage2_sweep.py \
+# SCRIPT selects the stage's sweep driver. Both take the same
+# --preset/--seed/--only-index/--out contract and write the same CSV schema, so
+# this wrapper does not care which. The array size does differ per preset, so
+# pass --array explicitly and check it first:
+#     python $SCRIPT --preset $PRESET --count
+# --modes is stage2-only; stage3 splits its arms with --feature-maps instead.
+SCRIPT="${SCRIPT:-scripts/stage2_sweep.py}"
+echo "driver: $SCRIPT  preset: $PRESET  seed: $SEED"
+
+# shellcheck disable=SC2086
+srun python "$SCRIPT" \
     --preset "$PRESET" \
     --backend fla \
     --seed "$SEED" \
     ${MODES:+--modes $MODES} \
+    ${EXTRA_ARGS:-} \
     --only-index "$IDX" \
     --out "$OUT"
