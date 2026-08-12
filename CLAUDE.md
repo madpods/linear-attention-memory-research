@@ -64,7 +64,32 @@ Both mistakes produced clean, plausible, publishable-looking curves. Neither was
 
 The lesson worth carrying into Stages 3–6: a metric that reads *constant* across a sweep is as suspicious as one that moves wildly. Both times, the flat reading was the grid failing to resolve the effect, not the effect being absent. Check the underlying curve before believing a flat capacity column.
 
-## Stage 3 — kernel feature maps (§17), built and unrun
+## Stage 3 — RESULT (308 runs, `results/stage3.csv`, 8000 steps, `r=0`, 4 seeds)
+
+All three pre-registered predictions held. Effective capacity (interpolated 95% crossing), `delta`, `d_k=16` unless the arm says otherwise:
+
+| arm | capacity | vs base | params | state | tok/s |
+|---|---|---|---|---|---|
+| `identity/d64` | 43.9 | 1.00× | 1.0× | 1.0× | 1.00× |
+| `elu/d64` | **11.3** | 0.26× | 1.0× | 1.0× | 1.02× |
+| `relu/d64` | **10.7** | 0.24× | 1.0× | 1.0× | 1.03× |
+| `dpfp1/d64` | **93.8** | **2.14×** | **1.0×** | 2.0× | 0.95× |
+| `dpfp2/d64` | ≥96 | ≥2.19× | 1.0× | 4.0× | 0.94× |
+| `dpfp3`, `dpfp4` | ≥96 | — | 1.0× | 6–8× | 0.86–0.84× |
+| `identity/d128` | ≥96 | ≥2.19× | 3.5× | 4.0× | 0.99× |
+| `identity/d256`…`d512` | ≥96 | — | 12.8–49× | 16–64× | 0.82–0.41× |
+
+**1. Positivity is actively harmful, as predicted.** `elu` 43.9 → 11.3 and `relu` → 10.7 — a **74–76% loss of capacity**. Predicted from the interference measurement (all-positive codes are mutually aligned: mean off-diagonal |cos| 0.203 → 0.954 for `elu`). `elu`'s spreads reach 67.8 at kv=32, so it is unstable as well as worse. Note this is specific to the delta rule: linear attention *needs* a non-negative map for its denominator, which is why `linear` mode keeps `elu+1` and is untouched by this.
+
+**2. DPFP doubles capacity for free in parameters: 43.9 → 93.8 at `d_φ = 2·d_k`.** Identical parameter count, 2× state, 5% throughput cost. §17's mechanism works.
+
+**3. It saturates immediately, also as predicted.** `dpfp2/3/4` all read ≥96 — off the top of the grid — while their cost grows linearly in `d_φ` (down to 0.84× throughput at `dpfp4`). **So the answer to the plan's question "smallest `d_φ` that closes the gap" is `d_φ = 2·d_k`**, and everything above it is measurably more expensive for no measurable gain. That number is what Stage 4b should budget against.
+
+**The comparison that would decide §17 is UNRESOLVED, and that is the honest headline.** At matched key-space dimension (`d_φ=32`), the control `identity/d128` reaches ≥96 against `dpfp1`'s 93.8 — but ≥96 means *saturated*, so the two cannot be separated. What can be said: the control costs **3.5× the parameters and 4× the state** to get there, and it is advantaged by construction (widening `d_model` grows `d_v` too). Per state element `dpfp1` is ~2× more efficient. So DPFP is clearly the better deal, but "does φ match plain widening at equal `d_φ`" needs a kv range this grid does not have.
+
+**To finish Stage 3, the measurable range has to grow.** `seq_len=256` caps kv at 124 (`2·kv + num_queries`), and seven of eleven arms already exceed it. `seq_len=512` would allow kv to ~252 at 2× cost per run. That re-fixes the frozen config a second time and invalidates the Stage 2 curves again, so it is a deliberate decision, not a detail — and it is the same measurement-ceiling problem flagged for Stage 4 (whose dedup headroom is 10.8× against a 3.7× measurable cap). Deciding it once, for both stages, is better than twice.
+
+## Stage 3 — implementation notes
 
 `src/lamr/layers/feature_maps.py` provides `identity` / `elu` / `relu` / `dpfp1..4`; `LinearAttentionLayer(feature_map=...)` applies φ to `q,k` **before** L2 normalization (after would leave `‖φ(k)‖` unconstrained and void the `β < 2/‖k‖²` contractivity bound). Parameter-free, so the projections stay `d_model × d_model` and the parameter count is identical across arms — verified by test. Delta modes only: `linear` keeps `elu+1`, which its denominator needs and which keeps the floor comparable with Stage 2. Drive it with `scripts/stage3_sweep.py` (imports Stage 2's `FIXED`, writes the same CSV schema).
 
