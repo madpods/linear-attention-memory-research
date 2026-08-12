@@ -215,8 +215,19 @@ nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 SCRIPT="${SCRIPT:-scripts/stage2_sweep.py}"
 echo "driver: $SCRIPT  preset: $PRESET  seed: $SEED"
 
+# Run python DIRECTLY, not under srun. This job is --ntasks=1, so srun buys
+# nothing here and costs a step allocation -- and when several array tasks land
+# on one node (which the %14 throttle makes routine on the a40 pool) those steps
+# contend. Observed 2026-08-11: of 308 Stage 3 tasks, four hung for 2+ hours
+# against a 143s expected runtime, in three distinct ways that all point at the
+# step boundary rather than the work:
+#   - one printed "done in 143.4s final acc 0.993" and never exited (teardown),
+#   - two printed the preamble and produced no python output at all (launch),
+#   - one never created its log file.
+# With --requeue and --time=04:00:00 that is not merely slow: the task is killed
+# at the wall and resubmitted, so a hang becomes an indefinite loop.
 # shellcheck disable=SC2086
-srun python "$SCRIPT" \
+python "$SCRIPT" \
     --preset "$PRESET" \
     --backend fla \
     --seed "$SEED" \
