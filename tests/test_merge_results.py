@@ -170,3 +170,56 @@ def test_missing_parts_dir_is_a_clean_error(tmp_path, monkeypatch):
     empty.mkdir()
     with pytest.raises(SystemExit, match="no CSVs found"):
         run(monkeypatch, empty, tmp_path / "merged.csv")
+
+
+def test_rows_differing_only_on_a_stage3_axis_are_not_collapsed(tmp_path, monkeypatch):
+    """The Stage 3 arms share (mode, r, kv, steps, seed).
+
+    With only the Stage 2 key, eleven feature-map arms merged into ONE row and the
+    survivor was whichever part file was read last -- 305 rows became 28, and the
+    output looked like a clean single-arm result rather than like data loss.
+    """
+    parts = tmp_path / "parts"
+    parts.mkdir()
+    arms = [
+        ("identity", "64"), ("elu", "64"), ("relu", "64"),
+        ("dpfp1", "64"), ("dpfp2", "64"), ("dpfp3", "64"), ("dpfp4", "64"),
+        ("identity", "128"), ("identity", "256"),
+        ("identity", "384"), ("identity", "512"),
+    ]
+    for i, (fm, dm) in enumerate(arms):
+        write_part(
+            parts / f"stage3_s0_{i}.csv",
+            [base_row(feature_map=fm, d_model=dm, final_accuracy=f"0.{i:02d}")],
+        )
+
+    out = tmp_path / "merged.csv"
+    run(monkeypatch, parts, out)
+
+    merged = list(csv.DictReader(out.open(newline="", encoding="utf-8")))
+    assert len(merged) == len(arms), (
+        f"expected {len(arms)} distinct arms, got {len(merged)} -- rows collapsed"
+    )
+    assert {(r["feature_map"], r["d_model"]) for r in merged} == set(arms)
+
+
+def test_the_wide_control_is_distinguished_from_the_phi_arm(tmp_path, monkeypatch):
+    """identity/d64 and identity/d256 share a feature_map name.
+
+    d_model has to be in the key too, or the matched-state control arms -- which
+    are the ones that actually decide whether phi beats simply widening the
+    projections -- merge into the d_k=16 baseline.
+    """
+    parts = tmp_path / "parts"
+    parts.mkdir()
+    write_part(parts / "stage3_s0_0.csv",
+               [base_row(feature_map="identity", d_model="64", final_accuracy="0.44")])
+    write_part(parts / "stage3_s0_1.csv",
+               [base_row(feature_map="identity", d_model="256", final_accuracy="0.99")])
+
+    out = tmp_path / "merged.csv"
+    run(monkeypatch, parts, out)
+
+    merged = list(csv.DictReader(out.open(newline="", encoding="utf-8")))
+    assert len(merged) == 2, "the wide control collapsed into the baseline"
+    assert {r["d_model"] for r in merged} == {"64", "256"}

@@ -23,7 +23,24 @@ import csv
 import re
 from pathlib import Path
 
-KEY = ("mode", "redundancy_r", "num_kv_pairs", "steps", "seed")
+#: What makes a row a distinct run. Every axis a stage can sweep has to be in
+#: here, or rows that differ only on a missing axis collapse into one and the
+#: survivor is whichever file happened to be read last.
+#:
+#: This bit once: with the Stage 2 key alone, Stage 3's 305 rows merged down to
+#: 28, because its eleven feature-map arms share (mode, r, kv, steps, seed) and
+#: only differ on feature_map and d_model. The output looked like a clean result
+#: for a single arm rather than like data loss. Anything a later stage adds as a
+#: config axis belongs here on the day it is added.
+KEY = (
+    "mode",
+    "redundancy_r",
+    "num_kv_pairs",
+    "steps",
+    "seed",
+    "feature_map",  # Stage 3
+    "d_model",      # Stage 3's matched-state control arms
+)
 
 
 def main() -> None:
