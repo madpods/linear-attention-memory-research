@@ -38,6 +38,10 @@ class LMConfig:
     mlp_ratio: float = 4.0
     alpha_init_bias: float = 6.0
     tie_embeddings: bool = True
+    # Stage 3 (section 17). Parameter-free, so this changes the state's width and
+    # the per-token cost of touching it, never the parameter count. Applies to
+    # the delta modes only; see LinearAttentionLayer.
+    feature_map: str = "identity"
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -69,6 +73,7 @@ class Block(nn.Module):
             use_short_conv=cfg.use_short_conv,
             conv_size=cfg.conv_size,
             alpha_init_bias=cfg.alpha_init_bias,
+            feature_map=cfg.feature_map,
         )
         self.norm2 = nn.RMSNorm(cfg.d_model)
         self.mlp = MLP(cfg.d_model, cfg.mlp_ratio)

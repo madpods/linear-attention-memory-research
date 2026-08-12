@@ -47,6 +47,10 @@ class TrainConfig:
     chunk_size: int = 64
     backend: str = "chunked"
     use_short_conv: bool = True
+    # Stage 3 (section 17): identity | elu | relu | dpfp1..dpfp4. Parameter-free,
+    # so runs at different feature maps are automatically parameter-matched --
+    # which is why matched *state* is the control that actually decides anything.
+    feature_map: str = "identity"
     # "auto" -> cuda when present, else cpu. Explicit "cpu" forces the host even
     # on a GPU node, which is what reproduces the Stage 2 CPU baselines.
     device: str = "auto"
@@ -76,6 +80,7 @@ class TrainConfig:
             chunk_size=self.chunk_size,
             backend=self.backend,
             use_short_conv=self.use_short_conv,
+            feature_map=self.feature_map,
         )
 
     def as_dict(self) -> dict[str, Any]:

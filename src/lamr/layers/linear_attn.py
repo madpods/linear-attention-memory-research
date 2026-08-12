@@ -21,6 +21,8 @@ from lamr.layers.chunked import (
     chunk_gated_delta_rule,
     chunk_linear_attn,
 )
+from lamr.layers.feature_maps import make_feature_map
+from lamr.layers.feature_maps import output_dim as phi_output_dim
 from lamr.layers.recurrent import (
     delta_rule_recurrent,
     elu_plus_one,
@@ -79,6 +81,7 @@ class LinearAttentionLayer(nn.Module):
         use_short_conv: bool = True,
         conv_size: int = 4,
         alpha_init_bias: float = 6.0,
+        feature_map: str = "identity",
     ):
         super().__init__()
         if mode not in MODES:
@@ -93,6 +96,21 @@ class LinearAttentionLayer(nn.Module):
         self.num_heads = num_heads
         self.head_dim = d_model // num_heads
         self.chunk_size = chunk_size
+
+        # Stage 3 (section 17). Parameter-free, so the projections keep their
+        # d_model x d_model shape and the parameter count does not move; what
+        # grows is the state (d_phi x d_v) and the cost of touching it.
+        #
+        # Applies to the DELTA modes only. Linear attention needs a non-negative
+        # map for its denominator and already hardcodes elu+1; leaving it alone
+        # keeps the floor baseline comparable with the recorded Stage 2 curves.
+        self.feature_map_name = feature_map
+        self.feature_map = make_feature_map(feature_map)
+        self.d_phi = (
+            phi_output_dim(feature_map, self.head_dim)
+            if mode in ("delta", "gated_delta")
+            else self.head_dim
+        )
 
         self.q_proj = nn.Linear(d_model, d_model, bias=False)
         self.k_proj = nn.Linear(d_model, d_model, bias=False)
@@ -147,6 +165,13 @@ class LinearAttentionLayer(nn.Module):
             # The delta update is contractive only for beta < 2/||k||^2, so keys
             # are L2-normalized and beta confined to (0, 1). Queries are
             # normalized too, matching DeltaNet.
+            #
+            # phi comes BEFORE normalization, deliberately: expanding after would
+            # leave ||phi(k)|| unconstrained and void the contractivity bound
+            # that beta in (0, 1) relies on. Normalizing after keeps ||k|| = 1
+            # whatever phi did to the width.
+            q = self.feature_map(q)
+            k = self.feature_map(k)
             q = F.normalize(q, dim=-1)
             k = F.normalize(k, dim=-1)
             beta = torch.sigmoid(self.beta_proj(x)).transpose(1, 2)

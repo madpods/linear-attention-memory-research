@@ -33,9 +33,21 @@ def load(path: Path) -> list[dict]:
     return rows
 
 
-def by_mode(rows: list[dict]) -> list[str]:
-    present = {r["mode"] for r in rows}
-    return [m for m in MODE_ORDER if m in present] + sorted(present - set(MODE_ORDER))
+def by_group(rows: list[dict], key: str = "mode") -> list[str]:
+    """Row labels, in a stable order.
+
+    Stage 2 groups by mode; Stage 3 groups by feature_map (or d_model) so each
+    ablation arm gets its own row instead of being averaged into one.
+    """
+    present = {r[key] for r in rows}
+    known = [m for m in MODE_ORDER if m in present]
+    return known + sorted(present - set(known), key=_sort_key)
+
+
+def _sort_key(label: str):
+    """Numeric-aware so d_model 128 sorts before 512 and dpfp2 before dpfp3."""
+    digits = "".join(ch for ch in label if ch.isdigit())
+    return (int(digits) if digits else 0, label)
 
 
 def fmt_pct(x: float | None) -> str:
@@ -96,7 +108,8 @@ def _group_of(row: dict, group_key: str) -> float | int:
     return int(value) if group_key == "num_kv_pairs" else value
 
 
-def collect(rows: list[dict], mode: str, group_key: str, value_key: str) -> dict:
+def collect(rows: list[dict], mode: str, group_key: str, value_key: str,
+            row_key: str = "mode") -> dict:
     """``{group: [value, ...]}`` for one mode. A LIST, not a scalar.
 
     Assigning a scalar here silently kept only the last matching row, which made
@@ -107,7 +120,7 @@ def collect(rows: list[dict], mode: str, group_key: str, value_key: str) -> dict
     """
     points: dict = defaultdict(list)
     for row in rows:
-        if row["mode"] != mode:
+        if row[row_key] != mode:
             continue
         if not row.get(value_key):
             continue
@@ -115,7 +128,8 @@ def collect(rows: list[dict], mode: str, group_key: str, value_key: str) -> dict
     return points
 
 
-def table(rows: list[dict], group_key: str, title: str, value_key: str) -> None:
+def table(rows: list[dict], group_key: str, title: str, value_key: str,
+          row_key: str = "mode") -> None:
     """Recall table: one row per mode, one column per distinct group_key.
 
     Cells are means over whatever else varies (seeds always; kv as well when
@@ -129,12 +143,12 @@ def table(rows: list[dict], group_key: str, title: str, value_key: str) -> None:
 
     print(f"\n{title}")
     header = "  ".join(f"{g:>7}" for g in groups)
-    print(f"{'mode':<13} {header}   capacity@{int(CAPACITY_THRESHOLD * 100)}%")
+    print(f"{row_key:<13} {header}   capacity@{int(CAPACITY_THRESHOLD * 100)}%")
     print("-" * (14 + 9 * len(groups) + 16))
 
     spreads: dict[str, dict] = {}
-    for mode in by_mode(rows):
-        points = collect(rows, mode, group_key, value_key)
+    for mode in by_group(rows, row_key):
+        points = collect(rows, mode, group_key, value_key, row_key)
         means = {g: sum(v) / len(v) for g, v in points.items()}
         cells = "  ".join(fmt_pct(means.get(g)) for g in groups)
         # Capacity is only defined against a kv curve. For the r-grouped table
@@ -156,7 +170,7 @@ def table(rows: list[dict], group_key: str, title: str, value_key: str) -> None:
             print(f"  {mode:<11} {cells}")
 
 
-def capacity_vs_r(rows: list[dict]) -> None:
+def capacity_vs_r(rows: list[dict], row_key: str = "mode") -> None:
     """Effective capacity at each redundancy level.
 
     This is the headline cross-cutting number the plan asks every stage to
@@ -168,13 +182,13 @@ def capacity_vs_r(rows: list[dict]) -> None:
     r_values = sorted({float(x["redundancy_r"]) for x in rows})
     print(f"\nEffective capacity@{int(CAPACITY_THRESHOLD * 100)}% vs redundancy r")
     header = "  ".join(f"{r:>7}" for r in r_values)
-    print(f"{'mode':<13} {header}")
+    print(f"{row_key:<13} {header}")
     print("-" * (14 + 9 * len(r_values)))
     for mode in by_mode(rows):
         cells = []
         for r_val in r_values:
             subset = [x for x in rows if float(x["redundancy_r"]) == r_val]
-            points = collect(subset, mode, "num_kv_pairs", "final_accuracy")
+            points = collect(subset, mode, "num_kv_pairs", "final_accuracy", row_key)
             means = {g: sum(v) / len(v) for g, v in points.items()}
             cells.append(f"{effective_capacity(means):>7}")
         print(f"{mode:<13} {'  '.join(cells)}")
@@ -190,6 +204,16 @@ def main() -> None:
     parser.add_argument(
         "--steps", type=int, help="keep only rows with this step count"
     )
+    parser.add_argument("--feature-map", help="keep only rows with this feature map")
+    parser.add_argument("--d-model", help="keep only rows with this d_model")
+    parser.add_argument(
+        "--group-by", default="mode",
+        choices=("mode", "feature_map", "d_model", "arm"),
+        help="row key for every table. Stage 3 wants 'arm', a derived "
+             "feature_map/d_model label -- its wide control arms are ALSO named "
+             "identity, so grouping on feature_map alone would merge "
+             "identity at d_model=64 with identity at d_model=256.",
+    )
     args = parser.parse_args()
 
     rows = load(args.path)
@@ -201,21 +225,40 @@ def main() -> None:
         rows = [r for r in rows if int(float(r["steps"])) == args.steps]
         if not rows:
             raise SystemExit(f"no rows with steps={args.steps} in {args.path}")
+    # Derived row key for Stage 3: the arm is (feature_map, d_model) together.
+    for row in rows:
+        if row.get("feature_map") and row.get("d_model"):
+            row["arm"] = f"{row['feature_map']}/d{row['d_model']}"
 
-    # Cells group by (mode, r, kv) and average everything else, which is right
-    # for seeds and WRONG for step counts -- averaging a 1500-step run with a
-    # 12000-step one produces a number describing neither. The cliff preset
-    # varies steps deliberately, so refuse to average silently.
-    step_values = sorted({int(float(r["steps"])) for r in rows})
-    if len(step_values) > 1:
-        raise SystemExit(
-            f"{args.path} mixes {len(step_values)} step counts: {step_values}.\n"
-            "Cells average over everything except (mode, r, kv), so this would\n"
-            "average different training budgets together. Split them first:\n"
-            f"    python {Path(__file__).name} {args.path} --steps {step_values[0]}\n"
-            "or filter by the preset that produced them, e.g. --tag full / --tag cliff.\n"
-            f"Tags present: {sorted({r.get('tag', '') for r in rows})}"
-        )
+    for flag, column in (("feature_map", "feature_map"), ("d_model", "d_model")):
+        want = getattr(args, flag)
+        if want:
+            rows = [r for r in rows if r.get(column) == want]
+            if not rows:
+                raise SystemExit(f"no rows with {column}={want!r} in {args.path}")
+
+    # Cells group by (group_key, r, kv) and average everything else. That is right
+    # for seeds and wrong for every other axis: averaging a 1500-step run with a
+    # 12000-step one, or a dpfp2 arm with an identity arm, produces a number
+    # describing neither. Refuse rather than average silently -- this guard exists
+    # because the steps version of the mistake was actually made.
+    CONFOUNDS = ("steps", "feature_map", "d_model", "mode")
+    encoded = {"arm": ("feature_map", "d_model")}.get(args.group_by, ())
+    for column in CONFOUNDS:
+        if column == args.group_by or column in encoded:
+            continue
+        values = sorted({r[column] for r in rows if r.get(column) not in (None, "")})
+        if len(values) > 1:
+            flag = f"--{column.replace('_', '-')}"
+            raise SystemExit(
+                f"{args.path} mixes {len(values)} values of {column!r}: {values}.\n"
+                f"Cells average over everything except ({args.group_by}, r, kv), so\n"
+                "this would average them together. Either filter:\n"
+                f"    python {Path(__file__).name} {args.path} {flag} {values[0]}\n"
+                f"or make it the row key:\n"
+                f"    python {Path(__file__).name} {args.path} --group-by {column}\n"
+                f"Tags present: {sorted({r.get('tag', '') for r in rows})}"
+            )
     n_r = len({r["redundancy_r"] for r in rows})
     print(f"{len(rows)} runs from {args.path}")
     print(f"steps={rows[0]['steps']}  d_model={rows[0]['d_model']}  "
@@ -227,24 +270,25 @@ def main() -> None:
     for r_val in sorted({float(x["redundancy_r"]) for x in rows}):
         subset = [x for x in rows if float(x["redundancy_r"]) == r_val]
         table(subset, "num_kv_pairs", f"Recall vs num_kv_pairs  (r={r_val})",
-              "final_accuracy")
+              "final_accuracy", args.group_by)
 
     if n_r > 1:
         table(rows, "redundancy_r",
               "Recall vs redundancy r (mean over kv -- mixes saturated and "
               "collapsed regimes;\nread the capacity table below instead for a "
               "single comparable number)",
-              "final_accuracy")
-        capacity_vs_r(rows)
+              "final_accuracy", args.group_by)
+        capacity_vs_r(rows, args.group_by)
         print("\nRedundant vs non-redundant queries (r>0 only)")
         print(f"{'mode':<13} {'r':>6} {'redundant':>11} {'non-redund':>11} {'gap':>8}")
         print("-" * 52)
-        for mode in by_mode(rows):
+        for mode in by_group(rows, args.group_by):
             for r_val in sorted({float(x["redundancy_r"]) for x in rows}):
                 if r_val == 0:
                     continue
                 sel = [x for x in rows
-                       if x["mode"] == mode and float(x["redundancy_r"]) == r_val]
+                       if x[args.group_by] == mode
+                       and float(x["redundancy_r"]) == r_val]
                 red = [float(x["final_accuracy_redundant"]) for x in sel
                        if x.get("final_accuracy_redundant")]
                 non = [float(x["final_accuracy_non_redundant"]) for x in sel
@@ -258,8 +302,8 @@ def main() -> None:
     print("\nThroughput")
     print(f"{'mode':<13} {'tok/s':>10} {'sec/run':>9} {'params':>10} {'n':>5}")
     print("-" * 51)
-    for mode in by_mode(rows):
-        sel = [r for r in rows if r["mode"] == mode]
+    for mode in by_group(rows, args.group_by):
+        sel = [r for r in rows if r[args.group_by] == mode]
         # Skip unparseable cells rather than dying. Timing columns can be blank
         # or misaligned in older data (see the _append_csv note in train.py);
         # losing a throughput average is not a reason to lose the accuracy

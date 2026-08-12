@@ -64,6 +64,20 @@ Both mistakes produced clean, plausible, publishable-looking curves. Neither was
 
 The lesson worth carrying into Stages 3–6: a metric that reads *constant* across a sweep is as suspicious as one that moves wildly. Both times, the flat reading was the grid failing to resolve the effect, not the effect being absent. Check the underlying curve before believing a flat capacity column.
 
+## Stage 3 — kernel feature maps (§17), built and unrun
+
+`src/lamr/layers/feature_maps.py` provides `identity` / `elu` / `relu` / `dpfp1..4`; `LinearAttentionLayer(feature_map=...)` applies φ to `q,k` **before** L2 normalization (after would leave `‖φ(k)‖` unconstrained and void the `β < 2/‖k‖²` contractivity bound). Parameter-free, so the projections stay `d_model × d_model` and the parameter count is identical across arms — verified by test. Delta modes only: `linear` keeps `elu+1`, which its denominator needs and which keeps the floor comparable with Stage 2. Drive it with `scripts/stage3_sweep.py` (imports Stage 2's `FIXED`, writes the same CSV schema).
+
+**Read the tables with `--group-by arm`.** The wide control arms are also named `identity`, so grouping on `feature_map` alone merges `identity/d64` with `identity/d256`; `arm` is the composite. The analyzer now refuses outright when rows mix `steps`, `feature_map`, `d_model` or `mode` outside the row key — the generalized form of the guard that the steps-averaging mistake earned.
+
+**§17's stated ceiling is wrong as written, and it matters here.** §17 says the ceiling is `min(d_φ, d_v)`; with `d_v = 16` fixed that would make this whole stage pointless, since `min(64,16) = 16`. But Stage 2 *measured* capacity 44.0 at `d_k = d_v = 16`, and 44 > 16. `min(d_φ, d_v)` bounds `rank(S)`, not the association count: storing `N` associations means solving `kᵢᵀS = vᵢᵀ`, solvable while the keys stay independent, which needs `d_φ ≥ N`. The binding constraint is the **key-space dimension**, and 44 at `d_k=16` is ~2.75×, consistent with the `N ≈ 2·d_k` counting in the addendum 03 notes.
+
+**Predictions registered before running**, from the interference measurement in `tests/test_feature_maps.py` (mean off-diagonal |cos| over 512 random L2-normalized keys, `d_k=16`, baseline 0.203):
+
+- `elu` → 0.954 (**4.7× worse**) and `relu` → 0.328. Both should *hurt* the delta rule: an all-positive code is mutually aligned, and that off-diagonal similarity is the interference a rank-limited state fights. If `elu` helps, the interference story is wrong.
+- DPFP saturates almost immediately — 0.125 at `ν=1` against 0.116 at `ν=4`. So capacity should be roughly flat in `ν` while cost grows linearly in `d_φ`, making **`d_φ = 2·d_k` the answer** to "smallest `d_φ` that closes the gap".
+- Extrapolating 2.75×: `dpfp1` → ~88 (measurable), `dpfp2+` → ~176 and up, **off-scale against the `kv ≤ 124` ceiling.** Expect `dpfp2/3/4` to pin the top of the grid. That is a positive result the sweep cannot quantify, and the signal to raise `seq_len` before the larger arms mean anything.
+
 ## Commands
 
 ```bash
